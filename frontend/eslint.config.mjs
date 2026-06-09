@@ -18,10 +18,10 @@ export default tseslint.config(
       "no-restricted-syntax": [
         "warn",
         {
-          "selector": "Literal[value=/^[A-Z]/]",
-          "message": "Le stringhe rivolte all'utente vanno nei cataloghi i18n (doc 19 §1)."
-        }
-      ]
+          selector: "Literal[value=/^[A-Z]/]",
+          message: "Le stringhe rivolte all'utente vanno nei cataloghi i18n (doc 19 §1).",
+        },
+      ],
     },
   },
   {
