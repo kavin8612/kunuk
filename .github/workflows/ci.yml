@@ -55,7 +55,7 @@ jobs:
       # Versione Rust pinnata via ref (= channel di rust-toolchain.toml: 1.96.0).
       # Niente @stable: il ref è non-floating (doc 19 §5).
       - name: Installa toolchain Rust 1.96.0
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: rustfmt, clippy
 
