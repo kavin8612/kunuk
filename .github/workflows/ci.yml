@@ -89,9 +89,14 @@ jobs:
         run: cargo test --all-features
 
       # cargo-audit 0.22.2 — versione bloccata (doc 19 §5).
-      # Se già presente in cache (~/.cargo/bin), cargo install è un no-op.
+      # Install idempotente: se la cache (~/.cargo/bin) ha già 0.22.2 si salta
+      # (veloce), altrimenti si installa con --force. Senza --force cargo install
+      # fallirebbe con "binary already exists" sul binario ripristinato dalla cache.
       - name: Installa cargo-audit 0.22.2
-        run: cargo install cargo-audit --version 0.22.2 --locked
+        run: |
+          if ! command -v cargo-audit >/dev/null || ! cargo audit --version 2>/dev/null | grep -q "0.22.2"; then
+            cargo install cargo-audit --version 0.22.2 --locked --force
+          fi
 
       - name: Audit dipendenze (cargo-audit)
         run: cargo audit
