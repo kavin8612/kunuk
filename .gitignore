@@ -1,0 +1,87 @@
+# ── Rust ──────────────────────────────────────────────────────────────────────
+target/
+# Cargo.lock SI committa sempre (doc 19 §5): build riproducibili in CI e produzione
+*.pdb
+
+# ── Go ────────────────────────────────────────────────────────────────────────
+# I binari compilati vanno in out/ o bin/, non nel sorgente
+/core/bin/
+/core/out/
+*.exe
+*.test
+*.prof
+
+# ── TypeScript / Node ─────────────────────────────────────────────────────────
+node_modules/
+dist/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+
+# ── Tauri / desktop ───────────────────────────────────────────────────────────
+src-tauri/target/
+gen/
+
+# ── Docker / infrastruttura ───────────────────────────────────────────────────
+# I Compose override locali non si committano
+docker-compose.override.yml
+docker-compose.local.yml
+# Volume dati locali (Postgres dev)
+scripts/infra/volumes/
+
+# ── Segreti e ambienti ────────────────────────────────────────────────────────
+# .env.example si committa (template documentato); .env con i valori reali mai
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+
+# ── Materiali privati (solo locale, NON sul repo pubblico) ────────────────────
+# Scelta del titolare (2026-06-09): documentazione, workflow e sorgenti del brand
+# restano sul PC e non vengono pubblicati su GitHub. Restano leggibili in locale
+# (e da Claude Code) ma fuori dal repo. Riferimenti tipo "doc NN"/"ADR-xxxx" nei
+# commenti del codice puntano quindi a materiale non presente nel clone pubblico.
+CLAUDE.md
+docs/
+design/
+
+# ── IDE e editor ──────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# ── Coverage e report ─────────────────────────────────────────────────────────
+coverage/
+*.lcov
+*.profdata
+*.profraw
+/core/coverage.out
+/core/coverage.html
+
+# ── Log ───────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Build artifacts temporanei ────────────────────────────────────────────────
+*.tmp
+*.bak
+*.orig

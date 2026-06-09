@@ -1,0 +1,16 @@
+[package]
+name = "kunuk-crypto-core"
+version = "0.1.0"
+edition = "2021"
+description = "Motore crittografico zero-knowledge di Kunuk"
+publish = false
+
+[lib]
+name = "kunuk_crypto_core"
+path = "src/lib.rs"
+
+# Le dipendenze crittografiche si aggiungono al task 0.4 (primitive e derivazioni).
+# Nessuna dipendenza inline: tutti i parametri vengono dal doc 16, mai inventati.
+[dependencies]
+
+[dev-dependencies]

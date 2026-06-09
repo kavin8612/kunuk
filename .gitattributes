@@ -1,0 +1,38 @@
+# ── Line endings ──────────────────────────────────────────────────────────────
+# LF ovunque: Rust, Go e i tool CI li richiedono; evita diff fantasma su Windows
+* text=auto eol=lf
+
+# File binari: nessuna conversione
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.svg  binary
+*.ttf  binary
+*.woff binary
+*.woff2 binary
+*.pdf  binary
+*.zip  binary
+*.tar.gz binary
+*.pem  binary
+*.p12  binary
+
+# ── GitHub Linguist ───────────────────────────────────────────────────────────
+# Non contare i file generati nelle statistiche del repo
+*.md            linguist-documentation
+*.yaml          linguist-generated=false
+scripts/**      linguist-other
+
+# Lockfile: generati, non analizzati come codice
+Cargo.lock      linguist-generated
+go.sum          linguist-generated
+package-lock.json linguist-generated
+pnpm-lock.yaml  linguist-generated
+yarn.lock       linguist-generated
+
+# ── Diff driver ───────────────────────────────────────────────────────────────
+# Diff leggibile per lockfile (non collassati)
+Cargo.lock      diff=rust
+go.sum          diff=golang

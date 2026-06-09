@@ -1,0 +1,47 @@
+root = true
+
+# ── Default ────────────────────────────────────────────────────────────────────
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# ── Rust ───────────────────────────────────────────────────────────────────────
+[*.rs]
+indent_size = 4
+
+# ── Go ─────────────────────────────────────────────────────────────────────────
+[*.go]
+indent_style = tab
+indent_size = 4
+
+# ── TypeScript / JavaScript ────────────────────────────────────────────────────
+[*.{ts,tsx,js,jsx,mjs,cjs}]
+indent_size = 2
+
+# ── JSON / YAML / TOML ─────────────────────────────────────────────────────────
+[*.{json,yaml,yml,toml}]
+indent_size = 2
+
+# ── HTML / CSS ─────────────────────────────────────────────────────────────────
+[*.{html,css,scss}]
+indent_size = 2
+
+# ── Markdown ───────────────────────────────────────────────────────────────────
+[*.md]
+trim_trailing_whitespace = false
+
+# ── Makefile: richiede tab ──────────────────────────────────────────────────────
+[Makefile]
+indent_style = tab
+
+# ── Shell ──────────────────────────────────────────────────────────────────────
+[*.sh]
+indent_size = 2
+
+# ── SQL ────────────────────────────────────────────────────────────────────────
+[*.sql]
+indent_size = 2

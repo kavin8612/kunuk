@@ -1,0 +1,97 @@
+# Pre-commit: gli stessi strumenti della CI, eseguiti localmente (doc 19 §8).
+# Installazione: scripts/dev/setup.sh (registra gli hook pre-commit e pre-push).
+#
+# Strategia per stage:
+#   - pre-commit: controlli veloci ad ogni commit (formato, file, segreti).
+#   - pre-push:   linter pesanti prima di raggiungere il remote (clippy, golangci,
+#                 eslint, typecheck). Nulla arriva su origin senza lint.
+#
+# Gli hook di linguaggio sono `local`: usano le toolchain già bloccate
+# (rust-toolchain.toml, go.mod, package.json), così CI e locale non divergono.
+
+minimum_pre_commit_version: "4.6.0"
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  # ── Controlli generici sui file (stage: pre-commit) ─────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.md$'            # i .md preservano i trailing space (.editorconfig)
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]            # LF ovunque, coerente con .gitattributes
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: detect-private-key      # nessuna chiave privata committata (doc 19 §5)
+
+  # ── Scansione segreti (stage: pre-commit) ───────────────────────────────────
+  # Rilevanza alta per un password manager: blocca segreti prima del commit.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  # ── Formato dei linguaggi (stage: pre-commit, veloci) ───────────────────────
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt (crypto-core)
+        language: system
+        entry: cargo fmt --manifest-path crypto-core/Cargo.toml --check
+        files: '^crypto-core/.*\.rs$'
+        pass_filenames: false
+
+      - id: gofmt
+        name: gofmt (core)
+        language: system
+        entry: bash -c 'out=$(gofmt -l core/); test -z "$out" || { echo "$out"; exit 1; }'
+        files: '^core/.*\.go$'
+        pass_filenames: false
+
+      - id: prettier
+        name: prettier (frontend)
+        language: system
+        entry: bash -c 'cd frontend && npm run format:check'
+        files: '^frontend/.*\.(ts|tsx|js|jsx|mjs|cjs|json|css|scss|html|md)$'
+        pass_filenames: false
+
+  # ── Linter pesanti (stage: pre-push) ────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: cargo-clippy
+        name: cargo clippy (crypto-core)
+        language: system
+        entry: cargo clippy --manifest-path crypto-core/Cargo.toml --all-targets --all-features -- -D warnings
+        files: '^crypto-core/.*\.rs$'
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: golangci-lint
+        name: golangci-lint (core)
+        language: system
+        entry: bash -c 'cd core && golangci-lint run'
+        files: '^core/.*\.go$'
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: eslint
+        name: eslint (frontend)
+        language: system
+        entry: bash -c 'cd frontend && npm run lint'
+        files: '^frontend/.*\.(ts|tsx|js|jsx|mjs|cjs)$'
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: tsc
+        name: tsc --noEmit (frontend)
+        language: system
+        entry: bash -c 'cd frontend && npm run typecheck'
+        files: '^frontend/.*\.(ts|tsx)$'
+        pass_filenames: false
+        stages: [pre-push]

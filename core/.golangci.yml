@@ -1,0 +1,37 @@
+# Configurazione golangci-lint per il modulo core (Go) — schema v2.
+# golangci-lint v2.12.2, eseguito dalla CI via golangci/golangci-lint-action@v9.2.1.
+# Linter richiesti dal doc 19 §8: errcheck, gocyclo, gosec.
+version: "2"
+
+linters:
+  # default: none → si abilitano solo i linter dichiarati, ogni aggiunta è
+  # una decisione consapevole (doc 19 §5 — niente implicito).
+  default: none
+  enable:
+    - errcheck      # ogni errore deve essere controllato — doc 19 §4
+    - govet         # analisi statica standard della toolchain Go
+    - staticcheck   # analisi statica avanzata (in v2 include gosimple e stylecheck)
+    - gocyclo       # complessità ciclomatica — doc 19 §3
+    - gosec         # SAST: pattern di sicurezza — doc 08 §4, doc 19 §5
+  settings:
+    gocyclo:
+      # Soglia coerente con il limite di 40 righe per funzione (doc 19 §3).
+      min-complexity: 15
+    gosec:
+      # Nessuna esclusione: tutti i pattern di sicurezza attivi.
+      excludes: []
+    errcheck:
+      # Controlla anche gli errori da type-assert e i blank assignment.
+      check-type-assertions: true
+      check-blank: true
+
+# In v2 i formatter sono una sezione separata (eseguiti con `golangci-lint fmt`,
+# verificati durante `run`). goimports ordina e raggruppa gli import — doc 19 §8.
+formatters:
+  enable:
+    - goimports
+
+issues:
+  # Nessun cap: niente falso-pulito per troncamento dei risultati.
+  max-issues-per-linter: 0
+  max-same-issues: 0

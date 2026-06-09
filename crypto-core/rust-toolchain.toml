@@ -1,0 +1,8 @@
+# Versione Rust bloccata per build riproducibili (doc 19 §5).
+# Fonte di verità per lo sviluppo locale e il pre-commit.
+# La CI usa il ref pinnato `dtolnay/rust-toolchain@1.96.0`: deve restare allineato
+# a questo channel ad ogni aggiornamento.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
