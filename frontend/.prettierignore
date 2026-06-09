@@ -1,0 +1,7 @@
+# Output generati e dipendenze: non formattati da prettier.
+# I lockfile (package-lock.json, ecc.) sono già ignorati di default da prettier.
+node_modules/
+dist/
+out/
+coverage/
+.turbo/
