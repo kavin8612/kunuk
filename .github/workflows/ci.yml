@@ -34,10 +34,13 @@ jobs:
           filters: |
             crypto-core:
               - 'crypto-core/**'
+              - '.github/workflows/ci.yml'
             core:
               - 'core/**'
+              - '.github/workflows/ci.yml'
             frontend:
               - 'frontend/**'
+              - '.github/workflows/ci.yml'
 
   # ── Job 1: crypto-core (Rust) ───────────────────────────────────────────────
   # Gate bloccanti: rustfmt, clippy (SAST), test, cargo-audit.
@@ -55,7 +58,7 @@ jobs:
       # Versione Rust pinnata via ref (= channel di rust-toolchain.toml: 1.96.0).
       # Niente @stable: il ref è non-floating (doc 19 §5).
       - name: Installa toolchain Rust 1.96.0
-        uses: dtolnay/rust-toolchain@1.100.0
+        uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: rustfmt, clippy
 
@@ -133,10 +136,13 @@ jobs:
       - name: Test
         run: go test ./...
 
+      # repo-checkout: false → l'action NON rifà un secondo checkout (lo fa già il
+      # job sopra). Il doppio checkout duplicava l'header Authorization → HTTP 400.
       - name: Audit dipendenze (govulncheck)
         uses: golang/govulncheck-action@v1.0.4
         with:
           work-dir: core
+          repo-checkout: false
 
   # ── Job 3: frontend (TypeScript) ────────────────────────────────────────────
   # Gate bloccanti: prettier, eslint (SAST), tsc --noEmit, npm audit.
