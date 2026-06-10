@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1
+# Build del placeholder API Go (task 0.1). Multi-stage: compilazione su Alpine,
+# runtime su distroless non-root (doc 07: immagini minimali, utente non-root).
+# Le versioni sono bloccate (doc 19 §5): gli aggiornamenti sono deliberati.
+
+FROM golang:1.23.12-alpine3.22 AS build
+WORKDIR /src/core
+# Scarica le dipendenze sfruttando la cache dei layer (il placeholder usa solo
+# la stdlib: nessun go.sum finché non arrivano dipendenze al task 0.8).
+COPY core/go.mod ./
+RUN go mod download
+COPY core/ ./
+# Binario statico (CGO disattivato) eseguibile su distroless/static.
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/api ./cmd/api
+
+# Pin per digest (doc 19 §5): ":nonroot" è un tag mobile, il digest no.
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:d093aa3e30dbadd3efe1310db061a14da60299baff8450a17fe0ccc514a16639
+# L'immagine distroless fornisce già un utente non-root (uid 65532).
+COPY --from=build /out/api /api
+EXPOSE 8080
+ENTRYPOINT ["/api"]

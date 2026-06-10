@@ -26,6 +26,7 @@ jobs:
       crypto-core: ${{ steps.filter.outputs.crypto-core }}
       core:        ${{ steps.filter.outputs.core }}
       frontend:    ${{ steps.filter.outputs.frontend }}
+      infra:       ${{ steps.filter.outputs.infra }}
     steps:
       - uses: actions/checkout@v6.0.3
       - uses: dorny/paths-filter@v4.0.1
@@ -40,6 +41,9 @@ jobs:
               - '.github/workflows/ci.yml'
             frontend:
               - 'frontend/**'
+              - '.github/workflows/ci.yml'
+            infra:
+              - 'scripts/**'
               - '.github/workflows/ci.yml'
 
   # ── Job 1: crypto-core (Rust) ───────────────────────────────────────────────
@@ -187,7 +191,27 @@ jobs:
       - name: Audit dipendenze (npm audit)
         run: npm audit --audit-level=moderate
 
-  # ── Job 4: gate di merge bloccante ──────────────────────────────────────────
+  # ── Job 4: infra (Docker Compose + script shell) ────────────────────────────
+  # Gate bloccanti: validazione del Compose (config) e lint degli script (shellcheck).
+  # Non avvia lo stack (niente daemon): valida sintassi e interpolazione delle
+  # variabili usando .env.example come fonte (doc 07 §.env).
+  infra:
+    name: infra (Compose + shell)
+    needs: changes
+    if: needs.changes.outputs.infra == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      # docker compose è preinstallato sui runner ubuntu; config non richiede il daemon.
+      - name: Validazione del Compose (config)
+        run: docker compose -f scripts/infra/compose.yaml --env-file .env.example config -q
+
+      # shellcheck è preinstallato sui runner ubuntu.
+      - name: Lint degli script shell (shellcheck)
+        run: find scripts -name '*.sh' -print0 | xargs -0 --no-run-if-empty shellcheck
+
+  # ── Job 5: gate di merge bloccante ──────────────────────────────────────────
   # Unico "required status check" da configurare nella branch protection di main.
   # Necessario perché i job con path-filter risultano "skipped" (non "success")
   # quando i loro path non sono toccati: GitHub non accetta "skipped" come
@@ -195,7 +219,7 @@ jobs:
   ci-gate:
     name: Gate CI
     if: always()
-    needs: [crypto-core, core, frontend]
+    needs: [crypto-core, core, frontend, infra]
     runs-on: ubuntu-24.04
     steps:
       - name: Verifica risultati di tutti i job
@@ -204,6 +228,7 @@ jobs:
             "${{ needs.crypto-core.result }}"
             "${{ needs.core.result }}"
             "${{ needs.frontend.result }}"
+            "${{ needs.infra.result }}"
           )
           failed=0
           for r in "${results[@]}"; do

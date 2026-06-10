@@ -1,0 +1,117 @@
+# Docker Compose di Kunuk — sviluppo e produzione (doc 07, ADR-0012/0014).
+# Lo STESSO file serve dev e prod: le differenze stanno solo in .env.
+#
+#   Avvio:  docker compose -f scripts/infra/compose.yaml --env-file .env up --build
+#
+# Principi applicati (doc 07):
+#  - Caddy è l'unico servizio esposto (80/443); Postgres NON pubblica porte e
+#    vive solo sulla rete interna "backend" (anti lateral-movement).
+#  - Due reti: "frontend" (Caddy <-> API) e "backend" interna (API <-> Postgres).
+#  - Hardening baseline su ogni container: utente non-root, cap_drop ALL,
+#    no-new-privileges, filesystem read-only dove possibile, limiti di risorse.
+#  - I segreti arrivano da .env a runtime, mai dentro le immagini (SR-17).
+
+name: kunuk
+
+services:
+  # ── Ingress: Caddy + WAF Coraza (CRS v4) ──────────────────────────────────
+  caddy:
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      KUNUK_DOMAIN: ${KUNUK_DOMAIN}
+      KUNUK_ACME_EMAIL: ${KUNUK_ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - frontend
+    depends_on:
+      api:
+        condition: service_started
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 256m
+    pids_limit: 200
+
+  # ── Backend API (Go) — placeholder /health (task 0.1; reale in task-0.9) ───
+  api:
+    build:
+      context: ../..
+      dockerfile: scripts/infra/Dockerfile.api
+    restart: unless-stopped
+    environment:
+      KUNUK_ENV: ${KUNUK_ENV}
+      KUNUK_API_LISTEN_ADDR: ${KUNUK_API_LISTEN_ADDR}
+      KUNUK_LOG_LEVEL: ${KUNUK_LOG_LEVEL}
+      KUNUK_DB_HOST: ${KUNUK_DB_HOST}
+      KUNUK_DB_PORT: ${KUNUK_DB_PORT}
+      KUNUK_DB_NAME: ${KUNUK_DB_NAME}
+      KUNUK_DB_APP_USER: ${KUNUK_DB_APP_USER}
+      KUNUK_DB_APP_PASSWORD: ${KUNUK_DB_APP_PASSWORD}
+      KUNUK_DB_SSLMODE: ${KUNUK_DB_SSLMODE}
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    mem_limit: 256m
+    pids_limit: 200
+
+  # ── Datastore: PostgreSQL (unico datastore, ADR-0011) ─────────────────────
+  postgres:
+    image: postgres:18.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      # PG18+: il mount va su /var/lib/postgresql (i dati finiscono in una
+      # sottocartella per-major-version); montare .../data fa fallire l'avvio.
+      - pgdata:/var/lib/postgresql
+    networks:
+      - backend
+    # Nessun "ports:": il DB non è raggiungibile dall'host, solo dalla rete interna.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run/postgresql
+    mem_limit: 512m
+    pids_limit: 300
+
+networks:
+  frontend:
+  backend:
+    internal: true
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

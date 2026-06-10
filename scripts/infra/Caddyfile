@@ -1,0 +1,36 @@
+# Caddyfile di Kunuk — ingress unico (ADR-0014, doc 07).
+# Lo stesso file serve dev e prod: in dev KUNUK_DOMAIN=localhost (Caddy emette
+# un certificato dalla sua CA interna); in prod un dominio reale attiva ACME.
+{
+	# Email per la registrazione ACME/Let's Encrypt (ignorata per localhost).
+	email {$KUNUK_ACME_EMAIL}
+	# Il WAF deve valutare la richiesta prima dell'inoltro all'API.
+	order coraza_waf first
+}
+
+{$KUNUK_DOMAIN} {
+	# WAF Coraza con OWASP CRS v4 in modalità bloccante (ADR-0014).
+	# load_owasp_crs monta il filesystem embeddato del CRS: senza, gli Include
+	# con prefisso @ non si risolvono.
+	coraza_waf {
+		load_owasp_crs
+		directives `
+			Include @coraza.conf-recommended
+			Include @crs-setup.conf.example
+			Include @owasp_crs/*.conf
+			SecRuleEngine On
+		`
+	}
+
+	# Security header (doc 07 §sicurezza operativa): TLS only con HSTS.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# Inoltro al backend Go sulla rete Docker frontend.
+	reverse_proxy api:8080
+}
