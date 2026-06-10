@@ -1,0 +1,25 @@
+# Contesto di build Docker: tiene fuori segreti e file non necessari (SR-17).
+# Il build dell'API (scripts/infra/Dockerfile.api) usa il root come contesto ma
+# copia solo core/: tutto il resto è rumore (o, nel caso di .env, un segreto da
+# non far entrare nemmeno nel contesto inviato al daemon).
+
+# Segreti e ambiente locale
+.env
+.env.*
+
+# Metadati di versionamento e tooling
+.git
+.gitignore
+.gitattributes
+.editorconfig
+.pre-commit-config.yaml
+
+# Documentazione e brand (non servono in nessuna immagine)
+docs/
+design/
+*.md
+
+# Alberi di altri componenti, non usati dalle immagini server
+frontend/
+apps/
+crypto-core/
