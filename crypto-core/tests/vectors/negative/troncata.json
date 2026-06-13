@@ -1,5 +1,6 @@
 {
-  "descrizione": "busta troncata (manca parte del ciphertext)",
+  "kind": "envelope",
+  "descrizione": "busta troncata",
   "wrapping_key_hex": "1111111111111111111111111111111111111111111111111111111111111111",
   "envelope_hex": "4b4e010101444444444444444444444444444444444444444444444444fd30a33a3a00e24b95b4fc",
   "account_id_hex": "33333333333333333333333333333333",
