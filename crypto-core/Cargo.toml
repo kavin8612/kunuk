@@ -9,8 +9,10 @@ publish = false
 name = "kunuk_crypto_core"
 path = "src/lib.rs"
 
-# Le dipendenze crittografiche si aggiungono al task 0.4 (primitive e derivazioni).
-# Nessuna dipendenza inline: tutti i parametri vengono dal doc 16, mai inventati.
+# Le dipendenze si aggiungono al task 0.4 (primitive e derivazioni) — incluso
+# `thiserror` per gli errori tipizzati (doc 19 §4): rinviato finché un toolchain
+# locale non potrà rigenerare il lockfile (doc 19 §5.4). Nessuna dipendenza inline:
+# i parametri crittografici vengono dal doc 16, mai inventati.
 [dependencies]
 
 [dev-dependencies]
