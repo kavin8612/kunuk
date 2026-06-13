@@ -1,17 +1,20 @@
 //! Harness dei test vettoriali (doc 16 §8).
 //!
-//! Carica le fixture JSON sotto `tests/vectors/<categoria>/` ed esegue le primitive
-//! corrispondenti, confrontando l'output byte-per-byte con l'atteso. I positivi
-//! devono combaciare; i negativi devono fallire con l'errore atteso (un negativo che
-//! "passa" è un bug di sicurezza, non un test rotto). Le categorie ancora vuote
-//! (`item`, `manifest`, `recovery-auth`) si popolano ai task 0.6–0.7.
+//! Carica le fixture JSON sotto `tests/vectors/<categoria>/` ed esegue le primitive,
+//! confrontando l'output byte-per-byte con l'atteso. I positivi devono combaciare; i
+//! negativi devono fallire con l'errore atteso (un negativo che "passa" è un bug di
+//! sicurezza, non un test rotto). La categoria `recovery-auth` si popola al task 0.7.
 
 use std::path::{Path, PathBuf};
 
 use kunuk_crypto_core::crypto::params::Argon2Params;
+use kunuk_crypto_core::crypto::signature::keypair_from_seed;
 use kunuk_crypto_core::crypto::{argon2id, kdf};
 use kunuk_crypto_core::envelope::{self, EnvelopeType};
+use kunuk_crypto_core::vault::item;
+use kunuk_crypto_core::vault::manifest::{self, ItemRef, ManifestContent};
 use kunuk_crypto_core::CoreError;
+use minicbor::bytes::ByteArray;
 use serde::Deserialize;
 
 /// Categorie di vettori previste dal doc 16 §8.
@@ -65,6 +68,17 @@ fn parse_type(s: &str) -> EnvelopeType {
     }
 }
 
+/// Verifica che l'errore ottenuto corrisponda al nome atteso nel vettore.
+fn errore_atteso(atteso: &str, err: &CoreError) -> bool {
+    matches!(
+        (atteso, err),
+        ("DecryptFailed", CoreError::DecryptFailed)
+            | ("InvalidInput", CoreError::InvalidInput)
+            | ("UnsupportedVersion", CoreError::UnsupportedVersion)
+            | ("AuthFailed", CoreError::AuthFailed)
+    )
+}
+
 #[derive(Deserialize)]
 struct KdfVector {
     password_hex: String,
@@ -94,13 +108,60 @@ struct EnvelopeVector {
 }
 
 #[derive(Deserialize)]
-struct NegativeVector {
-    wrapping_key_hex: String,
-    envelope_hex: String,
-    account_id_hex: String,
-    expected_type: String,
-    kdf_params_cbor_hex: String,
-    expect_error: String,
+struct ItemVector {
+    vk_hex: String,
+    vault_id_hex: String,
+    item_id_hex: String,
+    content_cbor_hex: String,
+    cek_hex: String,
+    cek_nonce_hex: String,
+    item_nonce_hex: String,
+    ciphertext_hex: String,
+    wrapped_cek_hex: String,
+}
+
+#[derive(Deserialize)]
+struct ItemRefVector {
+    item_id_hex: String,
+    item_version: u64,
+}
+
+#[derive(Deserialize)]
+struct ManifestVector {
+    seed_hex: String,
+    vault_id_hex: String,
+    version: u64,
+    crdt_clock_hex: String,
+    items: Vec<ItemRefVector>,
+    signed_manifest_hex: String,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum NegativeVector {
+    Envelope {
+        wrapping_key_hex: String,
+        envelope_hex: String,
+        account_id_hex: String,
+        expected_type: String,
+        kdf_params_cbor_hex: String,
+        expect_error: String,
+    },
+    Item {
+        vk_hex: String,
+        vault_id_hex: String,
+        item_id_hex: String,
+        ciphertext_hex: String,
+        wrapped_cek_hex: String,
+        expect_error: String,
+    },
+    Manifest {
+        seed_hex: String,
+        signed_manifest_hex: String,
+        expected_vault_id_hex: String,
+        min_version: u64,
+        expect_error: String,
+    },
 }
 
 #[test]
@@ -181,29 +242,138 @@ fn vettori_envelope_combaciano() {
 }
 
 #[test]
+fn vettori_item_combaciano() {
+    let vettori = load_vectors::<ItemVector>(&vectors_root().join("item"));
+    assert!(!vettori.is_empty(), "nessun vettore item");
+    for (path, v) in vettori {
+        let vk: [u8; 32] = to_array(&v.vk_hex);
+        let vault: [u8; 16] = to_array(&v.vault_id_hex);
+        let id: [u8; 16] = to_array(&v.item_id_hex);
+        let cek: [u8; 32] = to_array(&v.cek_hex);
+        let cek_nonce: [u8; 24] = to_array(&v.cek_nonce_hex);
+        let item_nonce: [u8; 24] = to_array(&v.item_nonce_hex);
+        let content = hex::decode(&v.content_cbor_hex).expect("content_cbor_hex valido");
+
+        let (ct, wcek) =
+            item::encrypt_item_with(&vk, &vault, &id, &content, &cek, &cek_nonce, &item_nonce)
+                .expect("encrypt_item");
+        assert_eq!(
+            hex::encode(&ct),
+            v.ciphertext_hex,
+            "ciphertext {}",
+            path.display()
+        );
+        assert_eq!(
+            hex::encode(&wcek),
+            v.wrapped_cek_hex,
+            "wrapped_cek {}",
+            path.display()
+        );
+
+        let got = item::decrypt_item(&vk, &vault, &id, &ct, &wcek).expect("decrypt_item");
+        assert_eq!(&*got, &content, "round-trip item {}", path.display());
+    }
+}
+
+#[test]
+fn vettori_manifest_combaciano() {
+    let vettori = load_vectors::<ManifestVector>(&vectors_root().join("manifest"));
+    assert!(!vettori.is_empty(), "nessun vettore manifest");
+    for (path, v) in vettori {
+        let seed: [u8; 32] = to_array(&v.seed_hex);
+        let (sk, vk) = keypair_from_seed(&seed);
+        let content = ManifestContent {
+            vault_id: ByteArray::from(to_array::<16>(&v.vault_id_hex)),
+            version: v.version,
+            items: v
+                .items
+                .iter()
+                .map(|i| ItemRef {
+                    item_id: ByteArray::from(to_array::<16>(&i.item_id_hex)),
+                    item_version: i.item_version,
+                })
+                .collect(),
+            crdt_clock: hex::decode(&v.crdt_clock_hex).expect("crdt_clock_hex valido"),
+        };
+        let signed = manifest::sign_manifest(&sk, &content).expect("sign_manifest");
+        assert_eq!(
+            hex::encode(&signed),
+            v.signed_manifest_hex,
+            "manifest {}",
+            path.display()
+        );
+        let view =
+            manifest::verify_manifest(&vk, &signed, &to_array::<16>(&v.vault_id_hex), v.version)
+                .expect("verify_manifest");
+        assert_eq!(
+            view.version,
+            v.version,
+            "manifest version {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
 fn vettori_negative_falliscono_come_atteso() {
     let vettori = load_vectors::<NegativeVector>(&vectors_root().join("negative"));
     assert!(!vettori.is_empty(), "nessun vettore negativo");
     for (path, v) in vettori {
-        let wrapping_key: [u8; 32] = to_array(&v.wrapping_key_hex);
-        let account: [u8; 16] = to_array(&v.account_id_hex);
-        let env = hex::decode(&v.envelope_hex).expect("envelope_hex valido");
-        let params = hex::decode(&v.kdf_params_cbor_hex).expect("kdf_params_cbor_hex valido");
-        let et = parse_type(&v.expected_type);
-
-        let err = envelope::unwrap(&wrapping_key, &env, &account, et, &params)
-            .expect_err("il vettore negativo deve fallire");
-        let combacia = matches!(
-            (v.expect_error.as_str(), &err),
-            ("DecryptFailed", CoreError::DecryptFailed)
-                | ("InvalidInput", CoreError::InvalidInput)
-                | ("UnsupportedVersion", CoreError::UnsupportedVersion)
-        );
+        let (err, atteso) = match v {
+            NegativeVector::Envelope {
+                wrapping_key_hex,
+                envelope_hex,
+                account_id_hex,
+                expected_type,
+                kdf_params_cbor_hex,
+                expect_error,
+            } => {
+                let wk: [u8; 32] = to_array(&wrapping_key_hex);
+                let account: [u8; 16] = to_array(&account_id_hex);
+                let env = hex::decode(&envelope_hex).expect("envelope_hex valido");
+                let params = hex::decode(&kdf_params_cbor_hex).expect("params valido");
+                let et = parse_type(&expected_type);
+                let e =
+                    envelope::unwrap(&wk, &env, &account, et, &params).expect_err("deve fallire");
+                (e, expect_error)
+            }
+            NegativeVector::Item {
+                vk_hex,
+                vault_id_hex,
+                item_id_hex,
+                ciphertext_hex,
+                wrapped_cek_hex,
+                expect_error,
+            } => {
+                let vk: [u8; 32] = to_array(&vk_hex);
+                let vault: [u8; 16] = to_array(&vault_id_hex);
+                let id: [u8; 16] = to_array(&item_id_hex);
+                let ct = hex::decode(&ciphertext_hex).expect("ciphertext valido");
+                let wcek = hex::decode(&wrapped_cek_hex).expect("wrapped_cek valido");
+                let e = item::decrypt_item(&vk, &vault, &id, &ct, &wcek).expect_err("deve fallire");
+                (e, expect_error)
+            }
+            NegativeVector::Manifest {
+                seed_hex,
+                signed_manifest_hex,
+                expected_vault_id_hex,
+                min_version,
+                expect_error,
+            } => {
+                let seed: [u8; 32] = to_array(&seed_hex);
+                let (_, vk) = keypair_from_seed(&seed);
+                let signed = hex::decode(&signed_manifest_hex).expect("signed valido");
+                let exp_vault: [u8; 16] = to_array(&expected_vault_id_hex);
+                let e = manifest::verify_manifest(&vk, &signed, &exp_vault, min_version)
+                    .expect_err("deve fallire");
+                (e, expect_error)
+            }
+        };
         assert!(
-            combacia,
+            errore_atteso(&atteso, &err),
             "vettore negativo {}: atteso {}, ottenuto {:?}",
             path.display(),
-            v.expect_error,
+            atteso,
             err
         );
     }
