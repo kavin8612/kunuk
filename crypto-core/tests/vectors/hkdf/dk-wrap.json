@@ -1,0 +1,6 @@
+{
+  "descrizione": "HKDF-SHA-256 etichetta kunuk/v1/dk/wrap",
+  "ikm_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "info": "kunuk/v1/dk/wrap",
+  "okm_hex": "9e96235c61055ab05ce34073722ea8934288ab8014878c607f54fe64dddcc94e"
+}
