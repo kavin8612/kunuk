@@ -1,0 +1,9 @@
+{
+  "descrizione": "version sconosciuta nell'header (anti-downgrade)",
+  "wrapping_key_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+  "envelope_hex": "4b4e020101444444444444444444444444444444444444444444444444fd30a33a3a00e24b95b4fcbdfc1a258e6b91abef385f3866fda506cc4077a3600a59b5ef08b0a9d2a3f83f4245c1a404",
+  "account_id_hex": "33333333333333333333333333333333",
+  "expected_type": "password",
+  "kdf_params_cbor_hex": "706172616d732d6f7061636869",
+  "expect_error": "UnsupportedVersion"
+}
