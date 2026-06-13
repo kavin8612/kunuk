@@ -8,6 +8,8 @@
 
 pub mod aead;
 pub mod argon2id;
+pub mod header;
 pub mod kdf;
 pub mod params;
+pub mod rng;
 pub mod signature;
