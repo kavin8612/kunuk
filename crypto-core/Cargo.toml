@@ -9,10 +9,19 @@ publish = false
 name = "kunuk_crypto_core"
 path = "src/lib.rs"
 
-# Le dipendenze si aggiungono al task 0.4 (primitive e derivazioni) — incluso
-# `thiserror` per gli errori tipizzati (doc 19 §4): rinviato finché un toolchain
-# locale non potrà rigenerare il lockfile (doc 19 §5.4). Nessuna dipendenza inline:
-# i parametri crittografici vengono dal doc 16, mai inventati.
+# Dipendenze pinnate a versione esatta per build riproducibili (doc 19 §5.2);
+# licenze nel registro dipendenze. Ecosistema RustCrypto + dalek (auditato).
+# I parametri crittografici vengono dal doc 16, mai inventati inline.
 [dependencies]
+argon2 = "=0.5.3"                # Argon2id (KDF) — MIT OR Apache-2.0
+hkdf = "=0.13.0"                 # HKDF-SHA-256 — MIT OR Apache-2.0
+sha2 = "=0.11.0"                 # SHA-256 per HKDF — MIT OR Apache-2.0
+chacha20poly1305 = { version = "=0.10.1", default-features = false, features = ["alloc"] } # AEAD — MIT OR Apache-2.0
+ed25519-dalek = "=2.2.0"         # firma Ed25519 — BSD-3-Clause
+zeroize = "=1.9.0"               # azzeramento chiavi (SR-5) — MIT OR Apache-2.0
+thiserror = "=2.0.18"            # errori tipizzati (doc 19 §4) — MIT OR Apache-2.0
 
 [dev-dependencies]
+serde = { version = "=1.0.228", features = ["derive"] } # parsing fixture vettori — MIT OR Apache-2.0
+serde_json = "=1.0.150"          # fixture JSON dei vettori — MIT OR Apache-2.0
+hex = "=0.4.3"                    # campi binari in hex nei vettori — MIT OR Apache-2.0

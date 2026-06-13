@@ -1,0 +1,9 @@
+{
+  "descrizione": "Argon2id suite 0x01 v1 (doc 16 §3)",
+  "password_hex": "6b756e756b20766574746f7265206b6466",
+  "salt_hex": "000102030405060708090a0b0c0d0e0f",
+  "memory_kib": 65536,
+  "iterations": 3,
+  "parallelism": 4,
+  "output_hex": "94df0cb0fb557d5164ae936ddf49201641418e936f47c774bf8fc1b00c5a9f44"
+}

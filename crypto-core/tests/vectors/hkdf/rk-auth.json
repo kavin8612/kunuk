@@ -1,0 +1,6 @@
+{
+  "descrizione": "HKDF-SHA-256 etichetta kunuk/v1/rk/auth",
+  "ikm_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "info": "kunuk/v1/rk/auth",
+  "okm_hex": "12d2c532f4f71c0da662469c632eb36372bfdb267a4eed331694904cc9574a19"
+}
