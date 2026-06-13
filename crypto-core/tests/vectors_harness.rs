@@ -30,7 +30,11 @@ fn ogni_categoria_di_vettori_e_presente() {
     let root = vectors_root();
     for categoria in CATEGORIES {
         let dir = root.join(categoria);
-        assert!(dir.is_dir(), "manca la categoria di vettori: {}", dir.display());
+        assert!(
+            dir.is_dir(),
+            "manca la categoria di vettori: {}",
+            dir.display()
+        );
     }
 }
 
