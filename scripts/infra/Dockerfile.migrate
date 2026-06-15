@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1
+# Build del comando one-shot di migrazione DB (task 0.8). Stesso schema di Dockerfile.api:
+# compilazione su Alpine, runtime su distroless non-root (doc 07). Il servizio `migrate` del
+# Compose esegue questo binario a ogni avvio, applicando le migrazioni pendenti come
+# kunuk_migrations (idempotente, tracciato). Versioni bloccate (doc 19 §5).
+
+FROM golang:1.26.1-alpine AS build
+WORKDIR /src/core
+# Dipendenze in cache di layer: go.mod + go.sum prima del sorgente.
+COPY core/go.mod core/go.sum ./
+RUN go mod download
+COPY core/ ./
+# Binario statico (CGO disattivato) eseguibile su distroless/static.
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/migrate ./cmd/migrate
+
+# Pin per digest (doc 19 §5): ":nonroot" è un tag mobile, il digest no.
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:d093aa3e30dbadd3efe1310db061a14da60299baff8450a17fe0ccc514a16639
+# L'immagine distroless fornisce già un utente non-root (uid 65532).
+COPY --from=build /out/migrate /migrate
+ENTRYPOINT ["/migrate"]

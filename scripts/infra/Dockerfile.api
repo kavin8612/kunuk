@@ -3,11 +3,11 @@
 # runtime su distroless non-root (doc 07: immagini minimali, utente non-root).
 # Le versioni sono bloccate (doc 19 §5): gli aggiornamenti sono deliberati.
 
-FROM golang:1.23.12-alpine3.22 AS build
+FROM golang:1.26.1-alpine AS build
 WORKDIR /src/core
-# Scarica le dipendenze sfruttando la cache dei layer (il placeholder usa solo
-# la stdlib: nessun go.sum finché non arrivano dipendenze al task 0.8).
-COPY core/go.mod ./
+# Dipendenze in cache di layer: go.mod + go.sum prima del sorgente (le prime dipendenze
+# reali arrivano al task 0.8; toolchain Go 1.25, vedi go.mod).
+COPY core/go.mod core/go.sum ./
 RUN go mod download
 COPY core/ ./
 # Binario statico (CGO disattivato) eseguibile su distroless/static.
