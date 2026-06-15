@@ -14,6 +14,7 @@
 use ed25519_dalek::VerifyingKey;
 
 use crate::account::VaultKey;
+use crate::crypto::params::SECRET_KEY_LEN;
 use crate::crypto::signature::{self, SIGNATURE_LEN};
 use crate::envelope::{self, EnvelopeType, ACCOUNT_ID_LEN, EMPTY_KDF_PARAMS_CBOR};
 use crate::error::{CoreError, CoreResult};
@@ -42,6 +43,9 @@ pub fn recovery_sign_request(
     secret_key: &[u8],
     request_bytes: &[u8],
 ) -> CoreResult<[u8; SIGNATURE_LEN]> {
+    if secret_key.len() != SECRET_KEY_LEN {
+        return Err(CoreError::InvalidInput);
+    }
     let (signing_key, _) = keys::rk_auth_keypair(secret_key)?;
     Ok(signature::sign(&signing_key, &signing_input(request_bytes)))
 }
@@ -69,6 +73,9 @@ pub fn recover_unlock(
     recovery_envelope: &[u8],
     account_id: &[u8; ACCOUNT_ID_LEN],
 ) -> CoreResult<VaultKey> {
+    if secret_key.len() != SECRET_KEY_LEN {
+        return Err(CoreError::InvalidInput);
+    }
     let rk_wrap = keys::rk_wrap_key(secret_key)?;
     let vk = envelope::unwrap(
         &rk_wrap,
@@ -140,6 +147,21 @@ mod tests {
         assert!(matches!(
             recover_unlock(&SECRET_KEY, &env, &[0x99; ACCOUNT_ID_LEN]),
             Err(CoreError::DecryptFailed)
+        ));
+    }
+
+    #[test]
+    fn secret_key_di_lunghezza_errata_invalid_input() {
+        // Confine fail-fast come il percorso password: Secret Key di lunghezza ≠ 16 byte
+        // (ADR-0006) rifiutata prima di derivare, sia in firma sia in apertura busta.
+        let env = recovery_envelope();
+        assert!(matches!(
+            recover_unlock(&[0xA1; SECRET_KEY_LEN - 1], &env, &ACCOUNT),
+            Err(CoreError::InvalidInput)
+        ));
+        assert!(matches!(
+            recovery_sign_request(&[0xA1; SECRET_KEY_LEN + 1], REQUEST),
+            Err(CoreError::InvalidInput)
         ));
     }
 

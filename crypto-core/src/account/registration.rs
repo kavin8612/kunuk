@@ -125,9 +125,15 @@ pub fn register_with(
     let kdf_params_cbor = kdf_params::encode(&kdf_params)?;
 
     // Derivazioni dal segreto 2SKD `password ‖ Secret Key`: chiave-password e verificatore
-    // condividono la radice ma hanno etichette distinte (domain separation, doc 16 §3).
-    let pk = keys::pk_from_password(password, rnd.secret_key, rnd.salt_pk)?;
-    let auth_verifier = keys::auth_verifier(password, rnd.secret_key, rnd.salt_pk, account_id)?;
+    // condividono la radice (stretching Argon2id), calcolata una sola volta, poi due
+    // etichette HKDF distinte (domain separation, doc 16 §3).
+    let (pk, auth_verifier) = keys::pk_and_auth_verifier(
+        password,
+        rnd.secret_key,
+        rnd.salt_pk,
+        &kdf_params.argon2,
+        account_id,
+    )?;
 
     // Busta password: i parametri KDF reali sono nell'AAD (anti-downgrade, doc 16 §4).
     let password_envelope = envelope::wrap_with_nonce(
@@ -249,7 +255,7 @@ pub fn register(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::params::PRF_OUTPUT_LEN;
+    use crate::crypto::params::{ARGON2_V1, PRF_OUTPUT_LEN};
 
     const PASSWORD: &[u8] = b"correct horse battery staple";
     const SECRET_KEY: [u8; SECRET_KEY_LEN] = [0xA1; SECRET_KEY_LEN];
@@ -283,7 +289,7 @@ mod tests {
         let bundle = register_with(PASSWORD, Some(&PRF), &ACCOUNT, &randomness()).unwrap();
 
         // Busta password: PK derivata da `password ‖ Secret Key`, parametri reali nell'AAD.
-        let pk = keys::pk_from_password(PASSWORD, &SECRET_KEY, &SALT_PK).unwrap();
+        let pk = keys::pk_from_password(PASSWORD, &SECRET_KEY, &SALT_PK, &ARGON2_V1).unwrap();
         let from_password = envelope::unwrap(
             &pk,
             &bundle.password_envelope,
@@ -323,7 +329,8 @@ mod tests {
     fn verificatore_e_pubkey_coincidono_con_le_derivazioni() {
         let bundle = register_with(PASSWORD, Some(&PRF), &ACCOUNT, &randomness()).unwrap();
 
-        let av = keys::auth_verifier(PASSWORD, &SECRET_KEY, &SALT_PK, &ACCOUNT).unwrap();
+        let av =
+            keys::auth_verifier(PASSWORD, &SECRET_KEY, &SALT_PK, &ARGON2_V1, &ACCOUNT).unwrap();
         assert_eq!(*bundle.auth_verifier, *av);
 
         let (_, recovery_pub) = keys::rk_auth_keypair(&SECRET_KEY).unwrap();
@@ -402,7 +409,9 @@ mod tests {
         let secret_key = bundle.emergency_kit.reveal_secret_key().unwrap();
         let params = kdf_params::decode(&bundle.kdf_params_cbor).unwrap();
 
-        let pk = keys::pk_from_password(PASSWORD, &secret_key[..], &params.salt[..]).unwrap();
+        let pk =
+            keys::pk_from_password(PASSWORD, &secret_key[..], &params.salt[..], &params.argon2)
+                .unwrap();
         let from_password = envelope::unwrap(
             &pk,
             &bundle.password_envelope,

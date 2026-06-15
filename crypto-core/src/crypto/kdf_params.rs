@@ -15,7 +15,7 @@ use minicbor::{Decode, Encode};
 
 use crate::crypto::cbor;
 use crate::crypto::params::{Argon2Params, ARGON2_SALT_LEN, ARGON2_V1};
-use crate::error::CoreResult;
+use crate::error::{CoreError, CoreResult};
 
 /// Parametri della derivazione password (Argon2id + salt), suite 0x01.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,8 +103,17 @@ pub fn encode(params: &KdfParams) -> CoreResult<Vec<u8>> {
 /// non-shortest, mappe a lunghezza indefinita, chiavi duplicate/non ordinate e byte di
 /// coda → `InvalidInput`. I byte sono legati nell'AAD della busta password
 /// (anti-downgrade, doc 16 §4), quindi devono essere univoci.
+///
+/// Esige inoltre che i costi Argon2id rientrino nella **finestra di accettazione** della
+/// suite 0x01 (ADR-0019): sotto il minimo v1 (downgrade) o oltre il tetto (auto-DoS) →
+/// `InvalidInput`. È l'unico ingresso dei parametri non fidati (vengono dal server al
+/// login), quindi qui la finestra è imposta una volta per tutti i percorsi di derivazione.
 pub fn decode(bytes: &[u8]) -> CoreResult<KdfParams> {
-    cbor::decode_canonical(bytes)
+    let params: KdfParams = cbor::decode_canonical(bytes)?;
+    if !params.argon2.within_suite_v1_window() {
+        return Err(CoreError::InvalidInput);
+    }
+    Ok(params)
 }
 
 #[cfg(test)]
@@ -172,5 +181,51 @@ mod tests {
         let mut trailing = encode(&KdfParams::v1(SALT)).unwrap();
         trailing.extend_from_slice(&[0xde, 0xad]);
         assert!(matches!(decode(&trailing), Err(CoreError::InvalidInput)));
+    }
+
+    fn con_costi(memory_kib: u32, iterations: u32, parallelism: u32) -> KdfParams {
+        KdfParams {
+            argon2: Argon2Params {
+                memory_kib,
+                iterations,
+                parallelism,
+            },
+            salt: ByteArray::from(SALT),
+        }
+    }
+
+    #[test]
+    fn decode_rifiuta_costi_sotto_il_minimo() {
+        // CBOR canonico ma costi sotto il minimo v1 (downgrade) → InvalidInput (ADR-0019).
+        let cbor = encode(&con_costi(8, 1, 4)).unwrap();
+        assert!(matches!(decode(&cbor), Err(CoreError::InvalidInput)));
+    }
+
+    #[test]
+    fn decode_rifiuta_costi_oltre_il_tetto() {
+        use crate::crypto::params::{ARGON2_ITERATIONS_MAX, ARGON2_MEMORY_MAX_KIB};
+        // Memoria oltre il tetto anti-DoS → InvalidInput.
+        let troppa_memoria = encode(&con_costi(ARGON2_MEMORY_MAX_KIB + 1, 3, 4)).unwrap();
+        assert!(matches!(
+            decode(&troppa_memoria),
+            Err(CoreError::InvalidInput)
+        ));
+        // Iterazioni oltre il tetto → InvalidInput.
+        let troppe_iter = encode(&con_costi(65536, ARGON2_ITERATIONS_MAX + 1, 4)).unwrap();
+        assert!(matches!(decode(&troppe_iter), Err(CoreError::InvalidInput)));
+        // Parallelismo diverso da quello della suite → InvalidInput.
+        let lanes_errate = encode(&con_costi(65536, 3, 8)).unwrap();
+        assert!(matches!(
+            decode(&lanes_errate),
+            Err(CoreError::InvalidInput)
+        ));
+    }
+
+    #[test]
+    fn decode_accetta_costi_dentro_la_finestra() {
+        // Costi più forti di v1 ma entro il tetto: accettati e round-trip esatto.
+        let forte = con_costi(128 * 1024, 5, 4);
+        let cbor = encode(&forte).unwrap();
+        assert_eq!(decode(&cbor).unwrap(), forte);
     }
 }
