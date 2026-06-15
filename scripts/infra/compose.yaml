@@ -67,12 +67,42 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # L'API parte solo a migrazioni applicate (schema pronto).
+      migrate:
+        condition: service_completed_successfully
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
     read_only: true
     mem_limit: 256m
     pids_limit: 200
+
+  # ── Migrazioni DB (one-shot): applica lo schema come kunuk_migrations e termina ─
+  # Stile Home Assistant: a ogni `up` applica le migrazioni pendenti (idempotente,
+  # tracciate da goose). L'API dipende dal suo completamento con successo.
+  migrate:
+    build:
+      context: ../..
+      dockerfile: scripts/infra/Dockerfile.migrate
+    restart: "no"
+    environment:
+      KUNUK_DB_HOST: ${KUNUK_DB_HOST}
+      KUNUK_DB_PORT: ${KUNUK_DB_PORT}
+      KUNUK_DB_NAME: ${KUNUK_DB_NAME}
+      KUNUK_DB_MIGRATIONS_USER: ${KUNUK_DB_MIGRATIONS_USER}
+      KUNUK_DB_MIGRATIONS_PASSWORD: ${KUNUK_DB_MIGRATIONS_PASSWORD}
+      KUNUK_DB_SSLMODE: ${KUNUK_DB_SSLMODE}
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    mem_limit: 128m
+    pids_limit: 100
 
   # ── Datastore: PostgreSQL (unico datastore, ADR-0011) ─────────────────────
   postgres:
@@ -82,10 +112,17 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Servono all'init dei ruoli (01-roles.sh): le password arrivano da .env, mai dal SQL.
+      KUNUK_DB_APP_USER: ${KUNUK_DB_APP_USER}
+      KUNUK_DB_APP_PASSWORD: ${KUNUK_DB_APP_PASSWORD}
+      KUNUK_DB_MIGRATIONS_USER: ${KUNUK_DB_MIGRATIONS_USER}
+      KUNUK_DB_MIGRATIONS_PASSWORD: ${KUNUK_DB_MIGRATIONS_PASSWORD}
     volumes:
       # PG18+: il mount va su /var/lib/postgresql (i dati finiscono in una
       # sottocartella per-major-version); montare .../data fa fallire l'avvio.
       - pgdata:/var/lib/postgresql
+      # Init una-tantum (superuser): crea ruoli ed estensioni al primo avvio.
+      - ../db/init:/docker-entrypoint-initdb.d:ro
     networks:
       - backend
     # Nessun "ports:": il DB non è raggiungibile dall'host, solo dalla rete interna.
