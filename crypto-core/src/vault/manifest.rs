@@ -8,13 +8,22 @@
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use minicbor::bytes::ByteArray;
 use minicbor::{Decode, Encode};
+use zeroize::Zeroizing;
 
+use crate::crypto::aead::{self, NONCE_LEN};
+use crate::crypto::cbor;
 use crate::crypto::header::{self, HEADER_LEN};
+use crate::crypto::keywrap;
+use crate::crypto::params::KEY_LEN;
+use crate::crypto::rng;
 use crate::crypto::signature::{self, SIGNATURE_LEN};
 use crate::error::{CoreError, CoreResult};
 use crate::vault::item::ID_LEN;
 
 const MANIFEST_LABEL: &[u8] = b"kunuk/v1/manifest";
+
+/// Etichetta di dominio dell'AAD della busta chiave di firma (doc 16 §6).
+const SIGNING_KEY_LABEL: &[u8] = b"kunuk/v1/signing-key";
 
 /// Riferimento a una voce nel manifest: id e versione della voce.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
@@ -57,7 +66,7 @@ fn encode_canonical(content: &ManifestContent) -> CoreResult<Vec<u8>> {
     normalizzato
         .items
         .sort_by(|a, b| a.item_id[..].cmp(&b.item_id[..]));
-    minicbor::to_vec(&normalizzato).map_err(|_| CoreError::Internal)
+    cbor::encode(&normalizzato)
 }
 
 fn signing_input(cbor: &[u8]) -> Vec<u8> {
@@ -93,14 +102,14 @@ pub fn verify_manifest(
         return Err(CoreError::InvalidInput);
     }
     let sig_start = signed_manifest.len() - SIGNATURE_LEN;
-    let cbor = &signed_manifest[HEADER_LEN..sig_start];
+    let cbor_bytes = &signed_manifest[HEADER_LEN..sig_start];
     let sig: &[u8; SIGNATURE_LEN] = (&signed_manifest[sig_start..])
         .try_into()
         .map_err(|_| CoreError::InvalidInput)?;
 
-    signature::verify(verifying_key, &signing_input(cbor), sig)?;
+    signature::verify(verifying_key, &signing_input(cbor_bytes), sig)?;
 
-    let content: ManifestContent = minicbor::decode(cbor).map_err(|_| CoreError::InvalidInput)?;
+    let content: ManifestContent = cbor::decode(cbor_bytes)?;
     if content.vault_id[..] != expected_vault_id[..] {
         return Err(CoreError::AuthFailed);
     }
@@ -111,6 +120,61 @@ pub fn verify_manifest(
         version: content.version,
         items: content.items,
     })
+}
+
+/// AAD della busta chiave di firma (doc 16 §6):
+/// `header ‖ "kunuk/v1/signing-key" ‖ vault_id`.
+fn signing_key_aad(vault_id: &[u8; ID_LEN]) -> Vec<u8> {
+    let mut a = Vec::with_capacity(HEADER_LEN + SIGNING_KEY_LABEL.len() + ID_LEN);
+    a.extend_from_slice(&header::header_v1());
+    a.extend_from_slice(SIGNING_KEY_LABEL);
+    a.extend_from_slice(vault_id);
+    a
+}
+
+/// Avvolge il seme Ed25519 della chiave di firma con la VK, usando un `nonce` esplicito
+/// (deterministico, per i test vettoriali). In produzione usare [`wrap_signing_key`].
+/// Formato: `header ‖ nonce ‖ seed_cifrato ‖ tag`, AAD legata a `vault_id` (doc 16 §6).
+pub fn wrap_signing_key_with_nonce(
+    vk: &[u8; KEY_LEN],
+    signing_seed: &[u8; KEY_LEN],
+    vault_id: &[u8; ID_LEN],
+    nonce: &[u8; NONCE_LEN],
+) -> CoreResult<Vec<u8>> {
+    let ct = aead::encrypt(vk, nonce, &signing_key_aad(vault_id), signing_seed)?;
+    Ok(keywrap::pack(nonce, &ct))
+}
+
+/// Avvolge il seme della chiave di firma generando un nonce fresco dal CSPRNG
+/// (mai riusato, doc 16 §7).
+pub fn wrap_signing_key(
+    vk: &[u8; KEY_LEN],
+    signing_seed: &[u8; KEY_LEN],
+    vault_id: &[u8; ID_LEN],
+) -> CoreResult<Vec<u8>> {
+    let mut nonce = [0u8; NONCE_LEN];
+    rng::fill(&mut nonce)?;
+    wrap_signing_key_with_nonce(vk, signing_seed, vault_id, &nonce)
+}
+
+/// Apre la busta chiave di firma e ricostruisce la `SigningKey` Ed25519. Fail-closed:
+/// header non valido → `UnsupportedVersion`/`InvalidInput`; busta troppo corta →
+/// `InvalidInput`; tag/AAD non verificano (incluso il trapianto su un altro vault) →
+/// `DecryptFailed`. Il seme decifrato vive in `Zeroizing` e non lascia la funzione.
+pub fn unwrap_signing_key(
+    vk: &[u8; KEY_LEN],
+    wrapped: &[u8],
+    vault_id: &[u8; ID_LEN],
+) -> CoreResult<SigningKey> {
+    let (nonce, ct) = keywrap::split(wrapped)?;
+    let plaintext = Zeroizing::new(aead::decrypt(vk, nonce, &signing_key_aad(vault_id), ct)?);
+    let seed: Zeroizing<[u8; KEY_LEN]> = Zeroizing::new(
+        plaintext
+            .as_slice()
+            .try_into()
+            .map_err(|_| CoreError::DecryptFailed)?,
+    );
+    Ok(SigningKey::from_bytes(&seed))
 }
 
 #[cfg(test)]
@@ -188,5 +252,57 @@ mod tests {
             verify_manifest(&vk, &signed, &[0x66; ID_LEN], 3),
             Err(CoreError::AuthFailed)
         ));
+    }
+
+    const WRAP_VK: [u8; KEY_LEN] = [0x33; KEY_LEN];
+    const SK_SEED: [u8; KEY_LEN] = [0x44; KEY_LEN];
+    const SK_VAULT: [u8; ID_LEN] = [0x66; ID_LEN];
+    const SK_NONCE: [u8; NONCE_LEN] = [0x55; NONCE_LEN];
+
+    #[test]
+    fn wrapped_signing_key_round_trip() {
+        let wrapped =
+            wrap_signing_key_with_nonce(&WRAP_VK, &SK_SEED, &SK_VAULT, &SK_NONCE).unwrap();
+        // header(4) + nonce(24) + seed(32) + tag(16) = 76 byte.
+        assert_eq!(wrapped.len(), 76);
+        let recovered = unwrap_signing_key(&WRAP_VK, &wrapped, &SK_VAULT).unwrap();
+        // La chiave ricostruita coincide con quella derivata dal seme.
+        let (_, expected_pub) = keypair_from_seed(&SK_SEED);
+        assert_eq!(
+            recovered.verifying_key().to_bytes(),
+            expected_pub.to_bytes()
+        );
+    }
+
+    #[test]
+    fn wrapped_signing_key_firma_un_manifest_verificabile() {
+        // La chiave estratta dalla busta firma un manifest che verifica con la pubblica.
+        let wrapped =
+            wrap_signing_key_with_nonce(&WRAP_VK, &SK_SEED, &SK_VAULT, &SK_NONCE).unwrap();
+        let sk = unwrap_signing_key(&WRAP_VK, &wrapped, &SK_VAULT).unwrap();
+        let pubkey = sk.verifying_key();
+        let signed = sign_manifest(&sk, &content()).unwrap();
+        assert!(verify_manifest(&pubkey, &signed, &[0x66; ID_LEN], 3).is_ok());
+    }
+
+    #[test]
+    fn wrapped_signing_key_trapianto_vault_decrypt_failed() {
+        let wrapped =
+            wrap_signing_key_with_nonce(&WRAP_VK, &SK_SEED, &SK_VAULT, &SK_NONCE).unwrap();
+        let altro_vault = [0x99; ID_LEN];
+        assert!(matches!(
+            unwrap_signing_key(&WRAP_VK, &wrapped, &altro_vault),
+            Err(CoreError::DecryptFailed)
+        ));
+    }
+
+    #[test]
+    fn wrap_signing_key_genera_nonce_diversi() {
+        let a = wrap_signing_key(&WRAP_VK, &SK_SEED, &SK_VAULT).unwrap();
+        let b = wrap_signing_key(&WRAP_VK, &SK_SEED, &SK_VAULT).unwrap();
+        assert_ne!(a, b, "nonce freschi → buste diverse");
+        let ka = unwrap_signing_key(&WRAP_VK, &a, &SK_VAULT).unwrap();
+        let kb = unwrap_signing_key(&WRAP_VK, &b, &SK_VAULT).unwrap();
+        assert_eq!(ka.to_bytes(), kb.to_bytes());
     }
 }

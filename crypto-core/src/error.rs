@@ -16,7 +16,7 @@ pub enum CoreError {
     InvalidInput,
 
     /// Autenticazione o verifica di firma fallita (es. prova di possesso, manifest,
-    /// login OPAQUE).
+    /// login passkey/verificatore).
     #[error("autenticazione fallita")]
     AuthFailed,
 

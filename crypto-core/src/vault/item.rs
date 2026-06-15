@@ -9,7 +9,9 @@ use minicbor::{Decode, Encode};
 use zeroize::Zeroizing;
 
 use crate::crypto::aead::{self, NONCE_LEN};
+use crate::crypto::cbor;
 use crate::crypto::header::{self, HEADER_LEN};
+use crate::crypto::keywrap;
 use crate::crypto::params::KEY_LEN;
 use crate::crypto::rng;
 use crate::error::{CoreError, CoreResult};
@@ -19,9 +21,6 @@ pub const ID_LEN: usize = 16;
 
 const CEK_LABEL: &[u8] = b"kunuk/v1/cek";
 const ITEM_LABEL: &[u8] = b"kunuk/v1/item";
-const TAG_LEN: usize = 16;
-const NONCE_OFFSET: usize = HEADER_LEN;
-const CT_OFFSET: usize = HEADER_LEN + NONCE_LEN;
 
 /// Contenuto tipizzato di una voce (doc 17 §2). Schema essenziale: cartelle,
 /// preferiti e campi aggiuntivi arrivano al task 1.1. Codificato in CBOR
@@ -76,12 +75,13 @@ pub enum ItemContent {
 
 /// Serializza il contenuto in CBOR deterministico.
 pub fn encode_content(content: &ItemContent) -> CoreResult<Vec<u8>> {
-    minicbor::to_vec(content).map_err(|_| CoreError::Internal)
+    cbor::encode(content)
 }
 
-/// Deserializza il contenuto CBOR. Input non valido → `InvalidInput`.
+/// Deserializza il contenuto CBOR. Input non valido → `InvalidInput`. Il contenuto è il
+/// plaintext autenticato dalla CEK, quindi non si esige qui la forma canonica.
 pub fn decode_content(bytes: &[u8]) -> CoreResult<ItemContent> {
-    minicbor::decode(bytes).map_err(|_| CoreError::InvalidInput)
+    cbor::decode(bytes)
 }
 
 fn aad(label: &[u8], vault_id: &[u8; ID_LEN], item_id: &[u8; ID_LEN]) -> Vec<u8> {
@@ -107,10 +107,7 @@ pub fn encrypt_item_with(
 ) -> CoreResult<(Vec<u8>, Vec<u8>)> {
     // wrapped_cek: CEK avvolta dalla VK, legata a vault_id‖item_id.
     let cek_ct = aead::encrypt(vk, cek_nonce, &aad(CEK_LABEL, vault_id, item_id), cek)?;
-    let mut wrapped_cek = Vec::with_capacity(CT_OFFSET + cek_ct.len());
-    wrapped_cek.extend_from_slice(&header::header_v1());
-    wrapped_cek.extend_from_slice(cek_nonce);
-    wrapped_cek.extend_from_slice(&cek_ct);
+    let wrapped_cek = keywrap::pack(cek_nonce, &cek_ct);
 
     // item ciphertext: contenuto cifrato con la CEK, legato a vault_id‖item_id.
     let item_ct = aead::encrypt(
@@ -119,10 +116,7 @@ pub fn encrypt_item_with(
         &aad(ITEM_LABEL, vault_id, item_id),
         content_cbor,
     )?;
-    let mut ciphertext = Vec::with_capacity(CT_OFFSET + item_ct.len());
-    ciphertext.extend_from_slice(&header::header_v1());
-    ciphertext.extend_from_slice(item_nonce);
-    ciphertext.extend_from_slice(&item_ct);
+    let ciphertext = keywrap::pack(item_nonce, &item_ct);
 
     Ok((ciphertext, wrapped_cek))
 }
@@ -151,17 +145,6 @@ pub fn encrypt_item(
     )
 }
 
-fn split_object(object: &[u8]) -> CoreResult<(&[u8; NONCE_LEN], &[u8])> {
-    header::verify(object)?;
-    if object.len() < CT_OFFSET + TAG_LEN {
-        return Err(CoreError::InvalidInput);
-    }
-    let nonce: &[u8; NONCE_LEN] = (&object[NONCE_OFFSET..CT_OFFSET])
-        .try_into()
-        .map_err(|_| CoreError::InvalidInput)?;
-    Ok((nonce, &object[CT_OFFSET..]))
-}
-
 /// Decifra un item: scarta la CEK con la VK, poi decifra il contenuto con la CEK.
 /// Trapianto su altro item/vault o ciphertext manomesso → `DecryptFailed`. Ritorna il
 /// CBOR del contenuto (azzerato al drop).
@@ -172,7 +155,7 @@ pub fn decrypt_item(
     ciphertext: &[u8],
     wrapped_cek: &[u8],
 ) -> CoreResult<Zeroizing<Vec<u8>>> {
-    let (cek_nonce, cek_ct) = split_object(wrapped_cek)?;
+    let (cek_nonce, cek_ct) = keywrap::split(wrapped_cek)?;
     let cek_bytes = Zeroizing::new(aead::decrypt(
         vk,
         cek_nonce,
@@ -184,7 +167,7 @@ pub fn decrypt_item(
         .try_into()
         .map_err(|_| CoreError::DecryptFailed)?;
 
-    let (item_nonce, item_ct) = split_object(ciphertext)?;
+    let (item_nonce, item_ct) = keywrap::split(ciphertext)?;
     let content = aead::decrypt(
         &cek,
         item_nonce,

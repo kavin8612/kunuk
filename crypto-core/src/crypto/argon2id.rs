@@ -1,4 +1,4 @@
-//! Argon2id (doc 16 §3): stretching della password / dell'`export_key` OPAQUE.
+//! Argon2id (doc 16 §3): stretching dell'input 2SKD (`password ‖ Secret Key`).
 //!
 //! La conformità all'RFC 9106 è delegata al crate `argon2` (RustCrypto, testato
 //! sui vettori ufficiali); qui si fissano i *nostri* parametri e si bloccano i

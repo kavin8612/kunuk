@@ -1,0 +1,8 @@
+{
+  "descrizione": "verificatore AV = HKDF(Argon2id(password ‖ Secret Key, salt), \"kunuk/v1/auth/verifier\" ‖ account_id) (doc 16 §3, binding all'account)",
+  "password_hex": "70617373776f7264",
+  "secret_key_hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+  "salt_hex": "07070707070707070707070707070707",
+  "account_id_hex": "10101010101010101010101010101010",
+  "av_hex": "e61c0ac60cbcef3dc3f3c3a21764f7502e1778dd33e664769bf7c3acc0103547"
+}

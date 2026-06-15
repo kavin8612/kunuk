@@ -1,0 +1,6 @@
+{
+  "kind": "kdfparams",
+  "descrizione": "kdf_params con memory_kib in forma non-shortest (intero su 8 byte 0x1b): decodifica agli stessi parametri ma non e canonico (doc 16 §1, §8) -> InvalidInput",
+  "cbor_hex": "a4001b000000000001000001030204035007070707070707070707070707070707",
+  "expect_error": "InvalidInput"
+}

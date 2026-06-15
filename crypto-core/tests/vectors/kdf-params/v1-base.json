@@ -1,0 +1,8 @@
+{
+  "descrizione": "kdf_params v1 (64 MiB, 3 iter, 4 lanes) + salt 0x07*16",
+  "memory_kib": 65536,
+  "iterations": 3,
+  "parallelism": 4,
+  "salt_hex": "07070707070707070707070707070707",
+  "cbor_hex": "a4001a0001000001030204035007070707070707070707070707070707"
+}

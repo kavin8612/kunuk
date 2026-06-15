@@ -23,6 +23,12 @@ const AAD_LABEL: &[u8] = b"kunuk/v1/envelope";
 /// Lunghezza dell'account id nei formati binari (UUID raw, 16 byte).
 pub const ACCOUNT_ID_LEN: usize = 16;
 
+/// `kdf_params_cbor` delle buste senza parametri KDF (recupero, biometria, passkey):
+/// la mappa CBOR vuota `0xA0` (doc 16 §4). Solo la busta password porta i parametri
+/// reali nell'AAD; le altre non derivano da Argon2id, quindi non hanno parametri da
+/// legare. Costante nominata (niente magic inline, doc 19 §3).
+pub const EMPTY_KDF_PARAMS_CBOR: &[u8] = &[0xA0];
+
 /// Lunghezza del tag Poly1305.
 const TAG_LEN: usize = 16;
 
@@ -41,6 +47,8 @@ pub enum EnvelopeType {
     Recovery,
     /// Busta biometria, per dispositivo: `wrap_DK(VK)`.
     Biometric,
+    /// Busta passkey: `wrap_PRF(VK)`, chiave dall'estensione WebAuthn PRF.
+    Passkey,
 }
 
 impl EnvelopeType {
@@ -50,6 +58,7 @@ impl EnvelopeType {
             EnvelopeType::Password => 0x01,
             EnvelopeType::Recovery => 0x02,
             EnvelopeType::Biometric => 0x03,
+            EnvelopeType::Passkey => 0x04,
         }
     }
 }
