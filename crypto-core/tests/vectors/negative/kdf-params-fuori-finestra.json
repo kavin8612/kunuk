@@ -1,0 +1,6 @@
+{
+  "kind": "kdfparams",
+  "descrizione": "kdf_params canonico ma con costi Argon2id sotto il minimo v1 (memory_kib=8, iterations=1): downgrade rifiutato dalla finestra di accettazione (ADR-0019) -> InvalidInput",
+  "cbor_hex": "a4000801010204035007070707070707070707070707070707",
+  "expect_error": "InvalidInput"
+}

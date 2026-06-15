@@ -55,7 +55,13 @@ pub fn derive_auth_verifier(
     account_id: &[u8; ACCOUNT_ID_LEN],
 ) -> CoreResult<Zeroizing<[u8; KEY_LEN]>> {
     let params = kdf_params::decode(kdf_params_cbor)?;
-    keys::auth_verifier(password, secret_key, &params.salt[..], account_id)
+    keys::auth_verifier(
+        password,
+        secret_key,
+        &params.salt[..],
+        &params.argon2,
+        account_id,
+    )
 }
 
 /// Sblocco con master password (doc 05 §6b). Deriva PK da `password ‖ Secret Key` (2SKD,
@@ -69,7 +75,7 @@ pub fn unlock_with_password(
     account_id: &[u8; ACCOUNT_ID_LEN],
 ) -> CoreResult<VaultKey> {
     let params = kdf_params::decode(kdf_params_cbor)?;
-    let pk = keys::pk_from_password(password, secret_key, &params.salt[..])?;
+    let pk = keys::pk_from_password(password, secret_key, &params.salt[..], &params.argon2)?;
     let vk = envelope::unwrap(
         &pk,
         password_envelope,

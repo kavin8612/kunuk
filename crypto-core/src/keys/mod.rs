@@ -9,12 +9,16 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use zeroize::Zeroizing;
 
 use crate::crypto::params::{
-    ARGON2_V1, KEY_LEN, LABEL_AUTH_VERIFIER, LABEL_DK_WRAP, LABEL_PK_WRAP, LABEL_PRF_WRAP,
+    Argon2Params, KEY_LEN, LABEL_AUTH_VERIFIER, LABEL_DK_WRAP, LABEL_PK_WRAP, LABEL_PRF_WRAP,
     LABEL_RK_AUTH, LABEL_RK_WRAP, PRF_OUTPUT_LEN, SECRET_KEY_LEN,
 };
 use crate::crypto::{argon2id, kdf, signature};
 use crate::envelope::ACCOUNT_ID_LEN;
 use crate::error::{CoreError, CoreResult};
+
+/// Chiave derivata a `KEY_LEN` byte, azzerata al drop (SR-5). Alias per le firme che
+/// restituiscono più di una chiave derivata.
+type DerivedKey = Zeroizing<[u8; KEY_LEN]>;
 
 /// Stretching 2SKD condiviso da PK e dal verificatore AV (doc 16 §3):
 /// `Argon2id(password ‖ Secret Key, salt)`. L'input è la master password concatenata
@@ -25,6 +29,7 @@ fn stretch_2skd(
     password: &[u8],
     secret_key: &[u8],
     salt: &[u8],
+    argon2: &Argon2Params,
 ) -> CoreResult<Zeroizing<[u8; KEY_LEN]>> {
     if secret_key.len() != SECRET_KEY_LEN {
         return Err(CoreError::InvalidInput);
@@ -32,7 +37,26 @@ fn stretch_2skd(
     let mut input = Zeroizing::new(Vec::with_capacity(password.len() + secret_key.len()));
     input.extend_from_slice(password);
     input.extend_from_slice(secret_key);
-    argon2id::derive(input.as_slice(), salt, &ARGON2_V1)
+    // I costi vengono dai parametri per-account (ADR-0019), non da una costante: la finestra
+    // di accettazione è già imposta a monte da `kdf_params::decode` (min v1, tetto anti-DoS).
+    argon2id::derive(input.as_slice(), salt, argon2)
+}
+
+/// PK dalla radice 2SKD già stretchata: `HKDF(stretched, "kunuk/v1/pk/wrap")`.
+fn pk_from_stretched(stretched: &[u8; KEY_LEN]) -> CoreResult<Zeroizing<[u8; KEY_LEN]>> {
+    kdf::hkdf_sha256(stretched, LABEL_PK_WRAP)
+}
+
+/// Verificatore AV dalla radice 2SKD già stretchata:
+/// `HKDF(stretched, "kunuk/v1/auth/verifier" ‖ account_id)` (binding all'account).
+fn av_from_stretched(
+    stretched: &[u8; KEY_LEN],
+    account_id: &[u8; ACCOUNT_ID_LEN],
+) -> CoreResult<Zeroizing<[u8; KEY_LEN]>> {
+    let mut info = Vec::with_capacity(LABEL_AUTH_VERIFIER.len() + ACCOUNT_ID_LEN);
+    info.extend_from_slice(LABEL_AUTH_VERIFIER);
+    info.extend_from_slice(account_id);
+    kdf::hkdf_sha256(stretched, &info)
 }
 
 /// Chiave-password PK: `HKDF(stretched, "kunuk/v1/pk/wrap")`, con
@@ -41,9 +65,10 @@ pub fn pk_from_password(
     password: &[u8],
     secret_key: &[u8],
     salt_pk: &[u8],
+    argon2: &Argon2Params,
 ) -> CoreResult<Zeroizing<[u8; KEY_LEN]>> {
-    let stretched = stretch_2skd(password, secret_key, salt_pk)?;
-    kdf::hkdf_sha256(stretched.as_slice(), LABEL_PK_WRAP)
+    let stretched = stretch_2skd(password, secret_key, salt_pk, argon2)?;
+    pk_from_stretched(&stretched)
 }
 
 /// Verificatore di autenticazione AV della via password (doc 16 §3):
@@ -55,13 +80,30 @@ pub fn auth_verifier(
     password: &[u8],
     secret_key: &[u8],
     salt: &[u8],
+    argon2: &Argon2Params,
     account_id: &[u8; ACCOUNT_ID_LEN],
 ) -> CoreResult<Zeroizing<[u8; KEY_LEN]>> {
-    let stretched = stretch_2skd(password, secret_key, salt)?;
-    let mut info = Vec::with_capacity(LABEL_AUTH_VERIFIER.len() + ACCOUNT_ID_LEN);
-    info.extend_from_slice(LABEL_AUTH_VERIFIER);
-    info.extend_from_slice(account_id);
-    kdf::hkdf_sha256(stretched.as_slice(), &info)
+    let stretched = stretch_2skd(password, secret_key, salt, argon2)?;
+    av_from_stretched(&stretched, account_id)
+}
+
+/// PK **e** verificatore AV in un solo stretching Argon2id (registrazione, doc 20 §3):
+/// condividono la radice 2SKD, che è la parte costosa. Calcolarla due volte (chiamando
+/// `pk_from_password` e `auth_verifier` separatamente) raddoppierebbe il costo di Argon2id
+/// della registrazione senza motivo; qui lo stretching è uno solo e le due chiavi escono
+/// da etichette HKDF distinte.
+pub fn pk_and_auth_verifier(
+    password: &[u8],
+    secret_key: &[u8],
+    salt: &[u8],
+    argon2: &Argon2Params,
+    account_id: &[u8; ACCOUNT_ID_LEN],
+) -> CoreResult<(DerivedKey, DerivedKey)> {
+    let stretched = stretch_2skd(password, secret_key, salt, argon2)?;
+    Ok((
+        pk_from_stretched(&stretched)?,
+        av_from_stretched(&stretched, account_id)?,
+    ))
 }
 
 /// Chiave di wrapping della busta passkey PRFw: `HKDF(prf_output, "kunuk/v1/prf/wrap")`
@@ -98,6 +140,7 @@ pub fn rk_auth_keypair(rk: &[u8]) -> CoreResult<(SigningKey, VerifyingKey)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::params::ARGON2_V1;
 
     // Secret Key di test, lunghezza fissa SECRET_KEY_LEN (ADR-0006).
     const SK_A: [u8; SECRET_KEY_LEN] = [0xA1; SECRET_KEY_LEN];
@@ -107,16 +150,16 @@ mod tests {
 
     #[test]
     fn pk_deterministica() {
-        let a = pk_from_password(b"password", &SK_A, &[0x07; 16]).unwrap();
-        let b = pk_from_password(b"password", &SK_A, &[0x07; 16]).unwrap();
+        let a = pk_from_password(b"password", &SK_A, &[0x07; 16], &ARGON2_V1).unwrap();
+        let b = pk_from_password(b"password", &SK_A, &[0x07; 16], &ARGON2_V1).unwrap();
         assert_eq!(*a, *b);
     }
 
     #[test]
     fn pk_dipende_dalla_secret_key() {
         // 2SKD: stessa password, Secret Key diversa ⇒ PK diversa.
-        let a = pk_from_password(b"password", &SK_A, &[0x07; 16]).unwrap();
-        let b = pk_from_password(b"password", &SK_B, &[0x07; 16]).unwrap();
+        let a = pk_from_password(b"password", &SK_A, &[0x07; 16], &ARGON2_V1).unwrap();
+        let b = pk_from_password(b"password", &SK_B, &[0x07; 16], &ARGON2_V1).unwrap();
         assert_ne!(*a, *b);
     }
 
@@ -124,11 +167,21 @@ mod tests {
     fn pk_rifiuta_secret_key_di_lunghezza_errata() {
         // Concatenazione non ambigua solo con Secret Key di lunghezza fissa (ADR-0006).
         assert!(matches!(
-            pk_from_password(b"password", &[0x01; SECRET_KEY_LEN - 1], &[0x07; 16]),
+            pk_from_password(
+                b"password",
+                &[0x01; SECRET_KEY_LEN - 1],
+                &[0x07; 16],
+                &ARGON2_V1
+            ),
             Err(CoreError::InvalidInput)
         ));
         assert!(matches!(
-            pk_from_password(b"password", &[0x01; SECRET_KEY_LEN + 1], &[0x07; 16]),
+            pk_from_password(
+                b"password",
+                &[0x01; SECRET_KEY_LEN + 1],
+                &[0x07; 16],
+                &ARGON2_V1
+            ),
             Err(CoreError::InvalidInput)
         ));
     }
@@ -138,32 +191,59 @@ mod tests {
 
     #[test]
     fn av_deterministico() {
-        let a = auth_verifier(b"password", &SK_A, &[0x07; 16], &ACCOUNT_A).unwrap();
-        let b = auth_verifier(b"password", &SK_A, &[0x07; 16], &ACCOUNT_A).unwrap();
+        let a = auth_verifier(b"password", &SK_A, &[0x07; 16], &ARGON2_V1, &ACCOUNT_A).unwrap();
+        let b = auth_verifier(b"password", &SK_A, &[0x07; 16], &ARGON2_V1, &ACCOUNT_A).unwrap();
         assert_eq!(*a, *b);
     }
 
     #[test]
     fn av_dipende_dalla_secret_key() {
-        let a = auth_verifier(b"password", &SK_A, &[0x07; 16], &ACCOUNT_A).unwrap();
-        let b = auth_verifier(b"password", &SK_B, &[0x07; 16], &ACCOUNT_A).unwrap();
+        let a = auth_verifier(b"password", &SK_A, &[0x07; 16], &ARGON2_V1, &ACCOUNT_A).unwrap();
+        let b = auth_verifier(b"password", &SK_B, &[0x07; 16], &ARGON2_V1, &ACCOUNT_A).unwrap();
         assert_ne!(*a, *b);
     }
 
     #[test]
     fn av_dipende_dall_account() {
         // Binding all'account: stessi password/SK/salt, account diverso ⇒ AV diverso.
-        let a = auth_verifier(b"password", &SK_A, &[0x07; 16], &ACCOUNT_A).unwrap();
-        let b = auth_verifier(b"password", &SK_A, &[0x07; 16], &ACCOUNT_B).unwrap();
+        let a = auth_verifier(b"password", &SK_A, &[0x07; 16], &ARGON2_V1, &ACCOUNT_A).unwrap();
+        let b = auth_verifier(b"password", &SK_A, &[0x07; 16], &ARGON2_V1, &ACCOUNT_B).unwrap();
         assert_ne!(*a, *b);
     }
 
     #[test]
     fn av_diverso_da_pk() {
         // Stessa radice (stessi password/SK/salt) ma etichette diverse ⇒ AV ≠ PK.
-        let pk = pk_from_password(b"password", &SK_A, &[0x07; 16]).unwrap();
-        let av = auth_verifier(b"password", &SK_A, &[0x07; 16], &ACCOUNT_A).unwrap();
+        let pk = pk_from_password(b"password", &SK_A, &[0x07; 16], &ARGON2_V1).unwrap();
+        let av = auth_verifier(b"password", &SK_A, &[0x07; 16], &ARGON2_V1, &ACCOUNT_A).unwrap();
         assert_ne!(*pk, *av);
+    }
+
+    #[test]
+    fn pk_and_auth_verifier_coincide_con_le_singole() {
+        // Il derivatore combinato (un solo stretching) deve dare PK e AV identici a quelli
+        // delle funzioni singole: stessa radice 2SKD, stesse etichette HKDF.
+        let (pk, av) =
+            pk_and_auth_verifier(b"password", &SK_A, &[0x07; 16], &ARGON2_V1, &ACCOUNT_A).unwrap();
+        let pk_single = pk_from_password(b"password", &SK_A, &[0x07; 16], &ARGON2_V1).unwrap();
+        let av_single =
+            auth_verifier(b"password", &SK_A, &[0x07; 16], &ARGON2_V1, &ACCOUNT_A).unwrap();
+        assert_eq!(*pk, *pk_single);
+        assert_eq!(*av, *av_single);
+    }
+
+    #[test]
+    fn costi_diversi_producono_chiavi_diverse() {
+        // I parametri di costo sono davvero usati nella derivazione (ADR-0019): a parità di
+        // password/SK/salt, costi più alti ⇒ PK diversa da quella v1.
+        let piu_costoso = Argon2Params {
+            memory_kib: 128 * 1024,
+            iterations: 4,
+            parallelism: 4,
+        };
+        let pk_v1 = pk_from_password(b"password", &SK_A, &[0x07; 16], &ARGON2_V1).unwrap();
+        let pk_alt = pk_from_password(b"password", &SK_A, &[0x07; 16], &piu_costoso).unwrap();
+        assert_ne!(*pk_v1, *pk_alt);
     }
 
     #[test]
@@ -173,6 +253,7 @@ mod tests {
                 b"password",
                 &[0x01; SECRET_KEY_LEN - 1],
                 &[0x07; 16],
+                &ARGON2_V1,
                 &ACCOUNT_A
             ),
             Err(CoreError::InvalidInput)

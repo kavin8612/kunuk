@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use kunuk_crypto_core::crypto::params::Argon2Params;
+use kunuk_crypto_core::crypto::params::{Argon2Params, ARGON2_V1};
 use kunuk_crypto_core::crypto::signature::keypair_from_seed;
 use kunuk_crypto_core::crypto::{argon2id, kdf};
 use kunuk_crypto_core::envelope::{self, EnvelopeType};
@@ -362,8 +362,8 @@ fn vettori_auth_verifier_combaciano() {
         let secret_key = hex::decode(&v.secret_key_hex).expect("secret_key_hex valido");
         let salt = hex::decode(&v.salt_hex).expect("salt_hex valido");
         let account: [u8; 16] = to_array(&v.account_id_hex);
-        let av =
-            keys::auth_verifier(&password, &secret_key, &salt, &account).expect("auth_verifier");
+        let av = keys::auth_verifier(&password, &secret_key, &salt, &ARGON2_V1, &account)
+            .expect("auth_verifier");
         assert_eq!(
             hex::encode(av.as_slice()),
             v.av_hex,
