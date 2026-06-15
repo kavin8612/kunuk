@@ -1,0 +1,330 @@
+//! Sblocco del vault (doc 05 §6, doc 20 §4).
+//!
+//! Ogni via di sblocco apre una busta della VK con la chiave di wrapping del percorso
+//! corrispondente e restituisce un [`VaultKey`]: handle opaco che tiene la VK in memoria
+//! azzerabile (SR-5) finché non viene bloccato. L'autenticazione verso il server (assertion
+//! WebAuthn, verificatore password) è del client/backend, separata dallo sblocco (ADR-0006):
+//! qui c'è solo l'apertura della busta. Decifrazione fail-closed (doc 16 §7): chiave
+//! sbagliata, busta trapiantata su un altro account o parametri alterati → `DecryptFailed`.
+
+use zeroize::Zeroizing;
+
+use crate::crypto::kdf_params;
+use crate::crypto::params::KEY_LEN;
+use crate::envelope::{self, EnvelopeType, ACCOUNT_ID_LEN, EMPTY_KDF_PARAMS_CBOR};
+use crate::error::CoreResult;
+use crate::keys;
+
+/// Handle opaco della VK sbloccata (doc 20 §1-2). La VK vive in `Zeroizing`: azzerata al
+/// drop o esplicitamente con [`lock`](VaultKey::lock). I byte della chiave non escono
+/// dalla superficie pubblica; le operazioni sul vault (item, manifest) la consumano dentro
+/// il crate.
+pub struct VaultKey {
+    vk: Zeroizing<[u8; KEY_LEN]>,
+}
+
+impl VaultKey {
+    /// Costruisce l'handle dalla VK appena scartata da una busta. `pub(crate)`: solo i
+    /// flussi del core (unlock, recovery) producono un `VaultKey`, mai un chiamante esterno.
+    pub(crate) fn new(vk: Zeroizing<[u8; KEY_LEN]>) -> Self {
+        Self { vk }
+    }
+
+    /// Blocca il vault azzerando subito la VK (doc 20 §4). Consuma l'handle: dopo il
+    /// `lock` non è più utilizzabile.
+    pub fn lock(self) {
+        // La VK è azzerata dal `Drop` di `Zeroizing` quando `self` esce di scope qui.
+    }
+
+    /// Accesso interno alla VK per le operazioni sul vault dello stesso crate (item,
+    /// manifest, abilitazione di nuove buste). Non è esposto fuori dal core: gli handle
+    /// non emettono byte di chiave (doc 20 §1).
+    pub(crate) fn expose(&self) -> &[u8; KEY_LEN] {
+        &self.vk
+    }
+}
+
+/// Deriva il verificatore di autenticazione della via password (doc 16 §3) per
+/// autenticarsi al server, **prima** di aprire la busta. Estrae il salt dai
+/// `kdf_params` (CBOR canonico) e delega a [`keys::auth_verifier`]: il verificatore è
+/// legato all'account, distinto dalla chiave-password e non reversibile (doc 16 §3).
+pub fn derive_auth_verifier(
+    password: &[u8],
+    secret_key: &[u8],
+    kdf_params_cbor: &[u8],
+    account_id: &[u8; ACCOUNT_ID_LEN],
+) -> CoreResult<Zeroizing<[u8; KEY_LEN]>> {
+    let params = kdf_params::decode(kdf_params_cbor)?;
+    keys::auth_verifier(password, secret_key, &params.salt[..], account_id)
+}
+
+/// Sblocco con master password (doc 05 §6b). Deriva PK da `password ‖ Secret Key` (2SKD,
+/// stessi parametri della registrazione) e apre la busta password. Password o Secret Key
+/// errate, account diverso o parametri alterati (anti-downgrade) → `DecryptFailed`.
+pub fn unlock_with_password(
+    password: &[u8],
+    secret_key: &[u8],
+    password_envelope: &[u8],
+    kdf_params_cbor: &[u8],
+    account_id: &[u8; ACCOUNT_ID_LEN],
+) -> CoreResult<VaultKey> {
+    let params = kdf_params::decode(kdf_params_cbor)?;
+    let pk = keys::pk_from_password(password, secret_key, &params.salt[..])?;
+    let vk = envelope::unwrap(
+        &pk,
+        password_envelope,
+        account_id,
+        EnvelopeType::Password,
+        kdf_params_cbor,
+    )?;
+    Ok(VaultKey::new(vk))
+}
+
+/// Sblocco con passkey (doc 05 §6a). L'assertion WebAuthn (auth al server) è del client; il
+/// core riceve l'`prf_output` dell'estensione PRF, ne deriva la chiave di wrapping e apre la
+/// busta passkey. `prf_output` di lunghezza errata → `InvalidInput`.
+pub fn unlock_with_passkey(
+    prf_output: &[u8],
+    passkey_envelope: &[u8],
+    account_id: &[u8; ACCOUNT_ID_LEN],
+) -> CoreResult<VaultKey> {
+    let prf_wrap = keys::prf_wrap_key(prf_output)?;
+    let vk = envelope::unwrap(
+        &prf_wrap,
+        passkey_envelope,
+        account_id,
+        EnvelopeType::Passkey,
+        EMPTY_KDF_PARAMS_CBOR,
+    )?;
+    Ok(VaultKey::new(vk))
+}
+
+/// Sblocco biometrico/PIN, locale al dispositivo (doc 05 §6c). La device key DK è custodita
+/// nel Secure Enclave/Keystore e rilasciata all'app **solo dopo** l'autenticazione
+/// biometrica: il binding di piattaforma (`DeviceKeyRef` nei binding) la consegna qui come
+/// byte, da cui il core deriva la chiave di wrapping e apre la busta biometria. La busta
+/// vive sul dispositivo, non sul server (doc 11). DK errata → `DecryptFailed`.
+pub fn unlock_with_device_key(
+    device_key: &[u8],
+    biometric_envelope: &[u8],
+    account_id: &[u8; ACCOUNT_ID_LEN],
+) -> CoreResult<VaultKey> {
+    let dk_wrap = keys::dk_wrap_key(device_key)?;
+    let vk = envelope::unwrap(
+        &dk_wrap,
+        biometric_envelope,
+        account_id,
+        EnvelopeType::Biometric,
+        EMPTY_KDF_PARAMS_CBOR,
+    )?;
+    Ok(VaultKey::new(vk))
+}
+
+/// Abilita lo sblocco con passkey su un vault già sbloccato (doc 20 §4): avvolge la VK con
+/// la chiave PRF e restituisce la busta passkey (nonce fresco dal CSPRNG). Permette di
+/// aggiungere la passkey a un account registrato con la sola password.
+pub fn enable_passkey_unlock(
+    vk: &VaultKey,
+    prf_output: &[u8],
+    account_id: &[u8; ACCOUNT_ID_LEN],
+) -> CoreResult<Vec<u8>> {
+    let prf_wrap = keys::prf_wrap_key(prf_output)?;
+    envelope::wrap(
+        &prf_wrap,
+        vk.expose(),
+        account_id,
+        EnvelopeType::Passkey,
+        EMPTY_KDF_PARAMS_CBOR,
+    )
+}
+
+/// Abilita lo sblocco biometrico su un vault già sbloccato (doc 20 §4): avvolge la VK con la
+/// chiave derivata dalla device key e restituisce la busta biometria, da custodire **sul
+/// dispositivo** (non sul server, doc 11). È così che nasce la busta che
+/// [`unlock_with_device_key`] aprirà.
+pub fn enable_biometric_unlock(
+    vk: &VaultKey,
+    device_key: &[u8],
+    account_id: &[u8; ACCOUNT_ID_LEN],
+) -> CoreResult<Vec<u8>> {
+    let dk_wrap = keys::dk_wrap_key(device_key)?;
+    envelope::wrap(
+        &dk_wrap,
+        vk.expose(),
+        account_id,
+        EnvelopeType::Biometric,
+        EMPTY_KDF_PARAMS_CBOR,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::account::registration::{register_with, RegistrationRandomness};
+    use crate::crypto::aead::NONCE_LEN;
+    use crate::crypto::params::{ARGON2_SALT_LEN, PRF_OUTPUT_LEN, SECRET_KEY_LEN};
+    use crate::error::CoreError;
+    use crate::vault::item::ID_LEN;
+
+    const PASSWORD: &[u8] = b"correct horse battery staple";
+    const SECRET_KEY: [u8; SECRET_KEY_LEN] = [0xA1; SECRET_KEY_LEN];
+    const VAULT_ID: [u8; ID_LEN] = [0x66; ID_LEN];
+    const VK: [u8; KEY_LEN] = [0x22; KEY_LEN];
+    const SIGNING_SEED: [u8; KEY_LEN] = [0x44; KEY_LEN];
+    const SALT_PK: [u8; ARGON2_SALT_LEN] = [0x07; ARGON2_SALT_LEN];
+    const ACCOUNT: [u8; ACCOUNT_ID_LEN] = [0x10; ACCOUNT_ID_LEN];
+    const PRF: [u8; PRF_OUTPUT_LEN] = [0x5A; PRF_OUTPUT_LEN];
+    const DEVICE_KEY: [u8; KEY_LEN] = [0xDC; KEY_LEN];
+    const N_PW: [u8; NONCE_LEN] = [0x01; NONCE_LEN];
+    const N_PK: [u8; NONCE_LEN] = [0x02; NONCE_LEN];
+    const N_RK: [u8; NONCE_LEN] = [0x03; NONCE_LEN];
+    const N_SK: [u8; NONCE_LEN] = [0x04; NONCE_LEN];
+
+    fn randomness() -> RegistrationRandomness<'static> {
+        RegistrationRandomness {
+            secret_key: &SECRET_KEY,
+            vault_id: &VAULT_ID,
+            vk: &VK,
+            signing_seed: &SIGNING_SEED,
+            salt_pk: &SALT_PK,
+            password_nonce: &N_PW,
+            passkey_nonce: &N_PK,
+            recovery_nonce: &N_RK,
+            signing_key_nonce: &N_SK,
+        }
+    }
+
+    fn bundle() -> crate::account::registration::RegistrationBundle {
+        register_with(PASSWORD, Some(&PRF), &ACCOUNT, &randomness()).unwrap()
+    }
+
+    #[test]
+    fn sblocco_password_restituisce_la_vk() {
+        let b = bundle();
+        let vk = unlock_with_password(
+            PASSWORD,
+            &SECRET_KEY,
+            &b.password_envelope,
+            &b.kdf_params_cbor,
+            &ACCOUNT,
+        )
+        .unwrap();
+        assert_eq!(vk.expose(), &VK);
+    }
+
+    #[test]
+    fn sblocco_passkey_restituisce_la_vk() {
+        let b = bundle();
+        let vk = unlock_with_passkey(&PRF, b.passkey_envelope.as_ref().unwrap(), &ACCOUNT).unwrap();
+        assert_eq!(vk.expose(), &VK);
+    }
+
+    #[test]
+    fn derive_auth_verifier_coincide_col_bundle() {
+        let b = bundle();
+        let av = derive_auth_verifier(PASSWORD, &SECRET_KEY, &b.kdf_params_cbor, &ACCOUNT).unwrap();
+        assert_eq!(*av, *b.auth_verifier);
+    }
+
+    #[test]
+    fn password_errata_decrypt_failed() {
+        let b = bundle();
+        assert!(matches!(
+            unlock_with_password(
+                b"password sbagliata",
+                &SECRET_KEY,
+                &b.password_envelope,
+                &b.kdf_params_cbor,
+                &ACCOUNT,
+            ),
+            Err(CoreError::DecryptFailed)
+        ));
+    }
+
+    #[test]
+    fn secret_key_errata_decrypt_failed() {
+        let b = bundle();
+        assert!(matches!(
+            unlock_with_password(
+                PASSWORD,
+                &[0xFF; SECRET_KEY_LEN],
+                &b.password_envelope,
+                &b.kdf_params_cbor,
+                &ACCOUNT,
+            ),
+            Err(CoreError::DecryptFailed)
+        ));
+    }
+
+    #[test]
+    fn passkey_su_altro_account_decrypt_failed() {
+        let b = bundle();
+        let altro = [0x99; ACCOUNT_ID_LEN];
+        assert!(matches!(
+            unlock_with_passkey(&PRF, b.passkey_envelope.as_ref().unwrap(), &altro),
+            Err(CoreError::DecryptFailed)
+        ));
+    }
+
+    #[test]
+    fn prf_di_lunghezza_errata_invalid_input() {
+        let b = bundle();
+        assert!(matches!(
+            unlock_with_passkey(
+                &[0x5A; PRF_OUTPUT_LEN - 1],
+                b.passkey_envelope.as_ref().unwrap(),
+                &ACCOUNT,
+            ),
+            Err(CoreError::InvalidInput)
+        ));
+    }
+
+    #[test]
+    fn biometria_round_trip_enable_poi_unlock() {
+        let b = bundle();
+        // Sblocco con password per ottenere un VaultKey, poi abilito la biometria.
+        let vk = unlock_with_password(
+            PASSWORD,
+            &SECRET_KEY,
+            &b.password_envelope,
+            &b.kdf_params_cbor,
+            &ACCOUNT,
+        )
+        .unwrap();
+        let bio_env = enable_biometric_unlock(&vk, &DEVICE_KEY, &ACCOUNT).unwrap();
+        // La busta biometria appena creata si riapre con la stessa device key.
+        let unlocked = unlock_with_device_key(&DEVICE_KEY, &bio_env, &ACCOUNT).unwrap();
+        assert_eq!(unlocked.expose(), &VK);
+        // Device key sbagliata → DecryptFailed.
+        assert!(matches!(
+            unlock_with_device_key(&[0x00; KEY_LEN], &bio_env, &ACCOUNT),
+            Err(CoreError::DecryptFailed)
+        ));
+    }
+
+    #[test]
+    fn abilita_passkey_su_vault_sbloccato() {
+        let b = bundle();
+        let vk = unlock_with_password(
+            PASSWORD,
+            &SECRET_KEY,
+            &b.password_envelope,
+            &b.kdf_params_cbor,
+            &ACCOUNT,
+        )
+        .unwrap();
+        // Una passkey diversa da quella di registrazione: la busta nuova si apre con essa.
+        let altra_prf = [0x7B; PRF_OUTPUT_LEN];
+        let pk_env = enable_passkey_unlock(&vk, &altra_prf, &ACCOUNT).unwrap();
+        let unlocked = unlock_with_passkey(&altra_prf, &pk_env, &ACCOUNT).unwrap();
+        assert_eq!(unlocked.expose(), &VK);
+    }
+
+    #[test]
+    fn lock_consuma_l_handle() {
+        let b = bundle();
+        let vk = unlock_with_passkey(&PRF, b.passkey_envelope.as_ref().unwrap(), &ACCOUNT).unwrap();
+        vk.lock();
+        // Dopo il lock l'handle non è più disponibile (garantito dal move di `lock`).
+    }
+}

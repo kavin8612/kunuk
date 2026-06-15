@@ -12,6 +12,7 @@
 // vivrà in `bindings/`, fuori da questa libreria.
 #![forbid(unsafe_code)]
 
+pub mod account;
 pub mod crypto;
 pub mod envelope;
 pub mod error;
@@ -20,4 +21,10 @@ pub mod recovery;
 pub mod sync;
 pub mod vault;
 
+pub use account::{
+    derive_auth_verifier, enable_biometric_unlock, enable_passkey_unlock, register,
+    unlock_with_device_key, unlock_with_passkey, unlock_with_password, EmergencyKit,
+    RegistrationBundle, VaultKey,
+};
 pub use error::{CoreError, CoreResult};
+pub use recovery::{recover_unlock, recovery_sign_request, recovery_verify_request};

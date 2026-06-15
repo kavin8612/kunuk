@@ -1,0 +1,8 @@
+{
+  "kind": "signingkey",
+  "descrizione": "busta chiave di firma valida ma aperta con vault_id diverso (trapianto): l'AAD non verifica -> DecryptFailed (doc 16 §6, §8)",
+  "vk_hex": "3333333333333333333333333333333333333333333333333333333333333333",
+  "wrapped_hex": "4b4e0101555555555555555555555555555555555555555555555555330932bf1c5a935dcc1226b378db5fd04ec4f321fa8ae1ccc113de6c1cb061a628ddc79b646f3e54de2e6361d4d675bf",
+  "vault_id_hex": "99999999999999999999999999999999",
+  "expect_error": "DecryptFailed"
+}

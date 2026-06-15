@@ -11,6 +11,8 @@ use kunuk_crypto_core::crypto::params::Argon2Params;
 use kunuk_crypto_core::crypto::signature::keypair_from_seed;
 use kunuk_crypto_core::crypto::{argon2id, kdf};
 use kunuk_crypto_core::envelope::{self, EnvelopeType};
+use kunuk_crypto_core::keys;
+use kunuk_crypto_core::recovery;
 use kunuk_crypto_core::vault::item;
 use kunuk_crypto_core::vault::manifest::{self, ItemRef, ManifestContent};
 use kunuk_crypto_core::CoreError;
@@ -20,10 +22,13 @@ use serde::Deserialize;
 /// Categorie di vettori previste dal doc 16 §8.
 const CATEGORIES: &[&str] = &[
     "kdf",
+    "kdf-params",
     "hkdf",
+    "auth-verifier",
     "envelope",
     "item",
     "manifest",
+    "signing-key",
     "recovery-auth",
     "negative",
 ];
@@ -64,6 +69,7 @@ fn parse_type(s: &str) -> EnvelopeType {
         "password" => EnvelopeType::Password,
         "recovery" => EnvelopeType::Recovery,
         "biometric" => EnvelopeType::Biometric,
+        "passkey" => EnvelopeType::Passkey,
         other => panic!("tipo busta sconosciuto: {other}"),
     }
 }
@@ -90,10 +96,36 @@ struct KdfVector {
 }
 
 #[derive(Deserialize)]
+struct KdfParamsVector {
+    memory_kib: u32,
+    iterations: u32,
+    parallelism: u32,
+    salt_hex: String,
+    cbor_hex: String,
+}
+
+#[derive(Deserialize)]
 struct HkdfVector {
     ikm_hex: String,
     info: String,
     okm_hex: String,
+}
+
+#[derive(Deserialize)]
+struct AuthVerifierVector {
+    password_hex: String,
+    secret_key_hex: String,
+    salt_hex: String,
+    account_id_hex: String,
+    av_hex: String,
+}
+
+#[derive(Deserialize)]
+struct RecoveryAuthVector {
+    secret_key_hex: String,
+    request_hex: String,
+    recovery_pubkey_hex: String,
+    signature_hex: String,
 }
 
 #[derive(Deserialize)]
@@ -118,6 +150,15 @@ struct ItemVector {
     item_nonce_hex: String,
     ciphertext_hex: String,
     wrapped_cek_hex: String,
+}
+
+#[derive(Deserialize)]
+struct SigningKeyVector {
+    vk_hex: String,
+    signing_seed_hex: String,
+    vault_id_hex: String,
+    nonce_hex: String,
+    wrapped_hex: String,
 }
 
 #[derive(Deserialize)]
@@ -162,6 +203,16 @@ enum NegativeVector {
         min_version: u64,
         expect_error: String,
     },
+    KdfParams {
+        cbor_hex: String,
+        expect_error: String,
+    },
+    SigningKey {
+        vk_hex: String,
+        wrapped_hex: String,
+        vault_id_hex: String,
+        expect_error: String,
+    },
 }
 
 #[test]
@@ -196,6 +247,33 @@ fn vettori_kdf_combaciano() {
             "vettore kdf {}",
             path.display()
         );
+    }
+}
+
+#[test]
+fn vettori_kdf_params_combaciano() {
+    use kunuk_crypto_core::crypto::kdf_params::{self, KdfParams};
+    let vettori = load_vectors::<KdfParamsVector>(&vectors_root().join("kdf-params"));
+    assert!(!vettori.is_empty(), "nessun vettore kdf-params");
+    for (path, v) in vettori {
+        let salt: [u8; 16] = to_array(&v.salt_hex);
+        let params = KdfParams {
+            argon2: Argon2Params {
+                memory_kib: v.memory_kib,
+                iterations: v.iterations,
+                parallelism: v.parallelism,
+            },
+            salt: ByteArray::from(salt),
+        };
+        let cbor = kdf_params::encode(&params).expect("encode kdf_params");
+        assert_eq!(
+            hex::encode(&cbor),
+            v.cbor_hex,
+            "cbor kdf-params {}",
+            path.display()
+        );
+        let back = kdf_params::decode(&cbor).expect("decode kdf_params");
+        assert_eq!(back, params, "round-trip kdf-params {}", path.display());
     }
 }
 
@@ -272,6 +350,90 @@ fn vettori_item_combaciano() {
 
         let got = item::decrypt_item(&vk, &vault, &id, &ct, &wcek).expect("decrypt_item");
         assert_eq!(&*got, &content, "round-trip item {}", path.display());
+    }
+}
+
+#[test]
+fn vettori_auth_verifier_combaciano() {
+    let vettori = load_vectors::<AuthVerifierVector>(&vectors_root().join("auth-verifier"));
+    assert!(!vettori.is_empty(), "nessun vettore auth-verifier");
+    for (path, v) in vettori {
+        let password = hex::decode(&v.password_hex).expect("password_hex valido");
+        let secret_key = hex::decode(&v.secret_key_hex).expect("secret_key_hex valido");
+        let salt = hex::decode(&v.salt_hex).expect("salt_hex valido");
+        let account: [u8; 16] = to_array(&v.account_id_hex);
+        let av =
+            keys::auth_verifier(&password, &secret_key, &salt, &account).expect("auth_verifier");
+        assert_eq!(
+            hex::encode(av.as_slice()),
+            v.av_hex,
+            "vettore auth-verifier {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn vettori_recovery_auth_combaciano() {
+    let vettori = load_vectors::<RecoveryAuthVector>(&vectors_root().join("recovery-auth"));
+    assert!(!vettori.is_empty(), "nessun vettore recovery-auth");
+    for (path, v) in vettori {
+        let secret_key = hex::decode(&v.secret_key_hex).expect("secret_key_hex valido");
+        let request = hex::decode(&v.request_hex).expect("request_hex valido");
+
+        // La pubkey RKa derivata dalla Secret Key deve combaciare byte-per-byte.
+        let (_, pubkey) = keys::rk_auth_keypair(&secret_key).expect("rk_auth_keypair");
+        assert_eq!(
+            hex::encode(pubkey.to_bytes()),
+            v.recovery_pubkey_hex,
+            "recovery pubkey {}",
+            path.display()
+        );
+
+        // La firma della richiesta deve combaciare byte-per-byte (Ed25519 deterministico).
+        let sig = recovery::recovery_sign_request(&secret_key, &request).expect("sign request");
+        assert_eq!(
+            hex::encode(sig),
+            v.signature_hex,
+            "firma recovery {}",
+            path.display()
+        );
+
+        // E la verifica con la pubblica attesa deve passare (round-trip).
+        let pubkey_arr: [u8; 32] = to_array(&v.recovery_pubkey_hex);
+        let sig_arr: [u8; 64] = to_array(&v.signature_hex);
+        recovery::recovery_verify_request(&pubkey_arr, &request, &sig_arr)
+            .unwrap_or_else(|_| panic!("verifica recovery {}", path.display()));
+    }
+}
+
+#[test]
+fn vettori_signing_key_combaciano() {
+    let vettori = load_vectors::<SigningKeyVector>(&vectors_root().join("signing-key"));
+    assert!(!vettori.is_empty(), "nessun vettore signing-key");
+    for (path, v) in vettori {
+        let vk: [u8; 32] = to_array(&v.vk_hex);
+        let seed: [u8; 32] = to_array(&v.signing_seed_hex);
+        let vault: [u8; 16] = to_array(&v.vault_id_hex);
+        let nonce: [u8; 24] = to_array(&v.nonce_hex);
+
+        let wrapped = manifest::wrap_signing_key_with_nonce(&vk, &seed, &vault, &nonce)
+            .expect("wrap_signing_key");
+        assert_eq!(
+            hex::encode(&wrapped),
+            v.wrapped_hex,
+            "wrapped signing-key {}",
+            path.display()
+        );
+
+        let recovered = manifest::unwrap_signing_key(&vk, &wrapped, &vault).expect("unwrap");
+        let (_, expected_pub) = keypair_from_seed(&seed);
+        assert_eq!(
+            recovered.verifying_key().to_bytes(),
+            expected_pub.to_bytes(),
+            "round-trip signing-key {}",
+            path.display()
+        );
     }
 }
 
@@ -366,6 +528,28 @@ fn vettori_negative_falliscono_come_atteso() {
                 let exp_vault: [u8; 16] = to_array(&expected_vault_id_hex);
                 let e = manifest::verify_manifest(&vk, &signed, &exp_vault, min_version)
                     .expect_err("deve fallire");
+                (e, expect_error)
+            }
+            NegativeVector::KdfParams {
+                cbor_hex,
+                expect_error,
+            } => {
+                use kunuk_crypto_core::crypto::kdf_params;
+                let cbor = hex::decode(&cbor_hex).expect("cbor_hex valido");
+                let e = kdf_params::decode(&cbor).expect_err("deve fallire");
+                (e, expect_error)
+            }
+            NegativeVector::SigningKey {
+                vk_hex,
+                wrapped_hex,
+                vault_id_hex,
+                expect_error,
+            } => {
+                let vk: [u8; 32] = to_array(&vk_hex);
+                let wrapped = hex::decode(&wrapped_hex).expect("wrapped_hex valido");
+                let vault: [u8; 16] = to_array(&vault_id_hex);
+                let e =
+                    manifest::unwrap_signing_key(&vk, &wrapped, &vault).expect_err("deve fallire");
                 (e, expect_error)
             }
         };

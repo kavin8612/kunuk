@@ -1,0 +1,7 @@
+{
+  "descrizione": "prova di possesso del recupero: firma RKa su \"kunuk/v1/recovery-request\" ‖ request_bytes; pubkey e firma attese byte-per-byte (doc 16 §6, recovery-auth)",
+  "secret_key_hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+  "request_hex": "6163636f756e743d31303b74733d313730303030303030303b6e6f6e63653d6465616462656566",
+  "recovery_pubkey_hex": "3ce898824d4479d395e794004a045d46a3282feb780173f4a7df08f4bae8bdb3",
+  "signature_hex": "8aebd31ecbd31f93d75d12ec49568768fd29064f5571d42ad48d2db6dbee6180d1672fe93dd9b88001d170a460321d46321767e20a642c91dcc0b5573714c106"
+}
