@@ -12,7 +12,7 @@
 
 use kunuk_crypto_core::crypto::kdf_params::{self, KdfParams};
 use kunuk_crypto_core::crypto::rng;
-use kunuk_crypto_core::vault::item::{decode_content, encode_content, ItemContent};
+use kunuk_crypto_core::vault::item::{decode_content, encode_content, ItemContent, ItemData};
 use kunuk_crypto_core::vault::manifest;
 use kunuk_crypto_core::{derive_auth_verifier, register, unlock_with_password, RegistrationBundle};
 
@@ -69,11 +69,17 @@ fn kdf_params_json(kdf_params_cbor: &[u8]) -> Result<serde_json::Value, String> 
 /// Item di prova: una credenziale di login con campi distintivi, per verificare che il
 /// plaintext torni identico dopo il round-trip cifratura→server→decifratura.
 fn sample_item() -> ItemContent {
-    ItemContent::Login {
-        username: "alice@example.com".into(),
-        password: "tromba-cavallo-graffetta-7".into(),
-        uris: vec!["https://example.com/login".into()],
-        notes: "creata dal gate 0.10".into(),
+    ItemContent {
+        title: "Example".into(),
+        folder: None,
+        favorite: true,
+        custom_fields: vec![],
+        data: ItemData::Login {
+            username: "alice@example.com".into(),
+            password: "tromba-cavallo-graffetta-7".into(),
+            uris: vec!["https://example.com/login".into()],
+            notes: "creata dal gate 0.10".into(),
+        },
     }
 }
 
