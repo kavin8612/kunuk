@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	appdb "kunuk.dev/core/db"
@@ -23,7 +24,10 @@ func ptr(s string) *string { return &s }
 
 func sampleRegister(email string) preauth.RegisterParams {
 	dummy := []byte{0x01, 0x02, 0x03}
+	// UUID scelti dal client, deterministici e unici per email (doc 16 §3-6, ADR-0020).
 	return preauth.RegisterParams{
+		AccountID:            uuid.NewSHA1(uuid.NameSpaceURL, []byte("kunuk-account:"+email)).String(),
+		VaultID:              uuid.NewSHA1(uuid.NameSpaceURL, []byte("kunuk-vault:"+email)).String(),
 		Email:                email,
 		PasswordVerifierHash: dummy,
 		KdfParamsJSON:        `{"memory_kib":65536,"iterations":3,"parallelism":4}`,

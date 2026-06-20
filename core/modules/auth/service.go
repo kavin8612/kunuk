@@ -63,6 +63,8 @@ func (s *Service) RegisterFinish(ctx context.Context, req RegisterFinishRequest)
 	}
 	pvHash := sha256.Sum256(req.PasswordVerifier)
 	_, _, err = preauth.RegisterAccount(ctx, s.pool, preauth.RegisterParams{
+		AccountID:            req.AccountID,
+		VaultID:              req.VaultID,
 		Email:                req.Email,
 		PasswordVerifierHash: pvHash[:],
 		KdfParamsJSON:        string(req.KdfParams),
@@ -128,7 +130,12 @@ func (s *Service) LoginStart(ctx context.Context, email string) (LoginStartRespo
 	if err != nil {
 		return LoginStartResponse{}, err
 	}
-	return LoginStartResponse{Handle: handleStr, WebAuthnRequestOptions: assertion, KdfParams: kdf}, nil
+	// account_id reale per email nota, decoy stabile per email ignota (indistinguibili, SR-26).
+	accountID := mat.AccountID
+	if !found {
+		accountID = decoyAccountID(s.decoy, email)
+	}
+	return LoginStartResponse{Handle: handleStr, WebAuthnRequestOptions: assertion, KdfParams: kdf, AccountID: accountID}, nil
 }
 
 // loginUser costruisce l'utente per BeginLogin: credenziali reali se l'account esiste e ha

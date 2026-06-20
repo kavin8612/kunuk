@@ -37,5 +37,9 @@ fn gate_e2e_contro_backend_vivo() {
     let mut steps = Vec::new();
     run_gate(&cfg, &mut |s| steps.push(s.to_string()))
         .unwrap_or_else(|e| panic!("cerimonia gate fallita: {e}\npassi: {steps:#?}"));
-    assert_eq!(steps.len(), 6, "attesi 6 passi loggati: {steps:#?}");
+    assert_eq!(
+        steps.len(),
+        7,
+        "attesi 7 passi loggati (incl. device vergine 0.11): {steps:#?}"
+    );
 }
