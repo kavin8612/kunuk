@@ -17,6 +17,7 @@ var (
 	ErrNotFound        = errors.New("non trovato")
 	ErrVersionConflict = errors.New("conflitto di versione")
 	ErrInvalidEnvelope = errors.New("tipo busta non valido")
+	ErrItemExists      = errors.New("item già esistente")
 )
 
 // validEnvelopeTypes sono i tipi sostituibili via API (la passkey si imposta in registrazione).
@@ -108,12 +109,13 @@ func (s *Service) ListItems(ctx context.Context, accountID string, cur *cursor, 
 	return out, err
 }
 
-// CreateItem crea un item nel vault dell'account.
+// CreateItem crea un item nel vault dell'account. Se in.ID è valorizzato (UUID scelto dal
+// client per legare l'AAD, doc 16 §5) lo usa come id; altrimenti lo genera il server.
 func (s *Service) CreateItem(ctx context.Context, accountID string, in ItemInput) (Item, error) {
 	var it Item
 	err := s.tx(ctx, accountID, func(t pgx.Tx) error {
 		var e error
-		it, e = insertItem(ctx, t, in.Ciphertext, in.WrappedCEK)
+		it, e = insertItem(ctx, t, in.ID, in.Ciphertext, in.WrappedCEK)
 		return e
 	})
 	return it, err

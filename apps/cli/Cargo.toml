@@ -1,0 +1,23 @@
+[package]
+name = "kunuk-cli"
+version = "0.1.0"
+edition = "2021"
+description = "CLI minima di Kunuk: cerimonia end-to-end registrazione → upload → login → sblocco → decifratura (gate Fase 0, task 0.10)"
+publish = false
+
+[[bin]]
+name = "kunuk"
+path = "src/main.rs"
+
+[lib]
+name = "kunuk_cli"
+path = "src/lib.rs"
+
+# Dipendenze pinnate a versione esatta (doc 19 §5.2); licenze nel registro dipendenze.
+# La crittografia arriva SOLO dal crypto-core (SR-1, SR-6): la CLi non importa primitive.
+[dependencies]
+kunuk-crypto-core = { path = "../../crypto-core" }       # motore zero-knowledge condiviso (ADR-0004)
+ureq = { version = "=3.3.0", features = ["json"] }       # client HTTP sincrono (rustls) + helper JSON — MIT OR Apache-2.0
+serde = { version = "=1.0.228", features = ["derive"] }  # (de)serializzazione DTO — MIT OR Apache-2.0
+serde_json = "=1.0.150"                                  # corpo/risposte JSON dell'API (doc 12) — MIT OR Apache-2.0
+base64 = "=0.22.1"                                       # base64url senza padding dei campi binari (doc 16 §1) — MIT OR Apache-2.0

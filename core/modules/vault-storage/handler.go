@@ -41,6 +41,8 @@ func (h *Handler) writeErr(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.WriteError(w, r, httpx.CodeNotFound, "non trovato")
 	case errors.Is(err, ErrVersionConflict):
 		httpx.WriteError(w, r, httpx.CodeConflict, "conflitto di versione")
+	case errors.Is(err, ErrItemExists):
+		httpx.WriteError(w, r, httpx.CodeConflict, "item già esistente")
 	case errors.Is(err, ErrInvalidEnvelope):
 		httpx.WriteError(w, r, httpx.CodeInvalidRequest, "tipo busta non valido")
 	default:
@@ -128,6 +130,13 @@ func (h *Handler) createItem(w http.ResponseWriter, r *http.Request) {
 	if err := httpx.DecodeStrict(w, r, &in); err != nil {
 		httpx.WriteError(w, r, httpx.CodeInvalidRequest, "corpo non valido")
 		return
+	}
+	// Id opzionale fornito dal client: deve essere un UUID valido (l'AAD vi è legata, doc 16 §5).
+	if in.ID != "" {
+		if _, err := uuid.Parse(in.ID); err != nil {
+			httpx.WriteError(w, r, httpx.CodeInvalidRequest, "id non valido")
+			return
+		}
 	}
 	it, err := h.svc.CreateItem(r.Context(), h.account(r), in)
 	if err != nil {

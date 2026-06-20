@@ -14,6 +14,7 @@ use crate::crypto::params::KEY_LEN;
 use crate::envelope::{self, EnvelopeType, ACCOUNT_ID_LEN, EMPTY_KDF_PARAMS_CBOR};
 use crate::error::CoreResult;
 use crate::keys;
+use crate::vault::item::{self, ID_LEN};
 
 /// Handle opaco della VK sbloccata (doc 20 §1-2). La VK vive in `Zeroizing`: azzerata al
 /// drop o esplicitamente con [`lock`](VaultKey::lock). I byte della chiave non escono
@@ -41,6 +42,32 @@ impl VaultKey {
     /// non emettono byte di chiave (doc 20 §1).
     pub(crate) fn expose(&self) -> &[u8; KEY_LEN] {
         &self.vk
+    }
+
+    /// Cifra un item del vault con questa VK (doc 16 §5, doc 20 §5). Genera CEK e nonce
+    /// freschi e lega `vault_id ‖ item_id` nell'AAD (anti-trapianto/swap). Ritorna
+    /// `(ciphertext, wrapped_cek)`. È così che i client (CLI compresa) consumano la VK
+    /// **come handle opaco**: i byte della chiave non lasciano il core (doc 20 §1).
+    pub fn encrypt_item(
+        &self,
+        vault_id: &[u8; ID_LEN],
+        item_id: &[u8; ID_LEN],
+        content_cbor: &[u8],
+    ) -> CoreResult<(Vec<u8>, Vec<u8>)> {
+        item::encrypt_item(self.expose(), vault_id, item_id, content_cbor)
+    }
+
+    /// Decifra un item del vault con questa VK (doc 16 §5, doc 20 §5). Trapianto su un altro
+    /// item/vault o ciphertext manomesso → `DecryptFailed`. Ritorna il CBOR del contenuto
+    /// (azzerato al drop).
+    pub fn decrypt_item(
+        &self,
+        vault_id: &[u8; ID_LEN],
+        item_id: &[u8; ID_LEN],
+        ciphertext: &[u8],
+        wrapped_cek: &[u8],
+    ) -> CoreResult<Zeroizing<Vec<u8>>> {
+        item::decrypt_item(self.expose(), vault_id, item_id, ciphertext, wrapped_cek)
     }
 }
 
@@ -324,6 +351,32 @@ mod tests {
         let pk_env = enable_passkey_unlock(&vk, &altra_prf, &ACCOUNT).unwrap();
         let unlocked = unlock_with_passkey(&altra_prf, &pk_env, &ACCOUNT).unwrap();
         assert_eq!(unlocked.expose(), &VK);
+    }
+
+    #[test]
+    fn item_round_trip_via_vaultkey() {
+        // La VK sbloccata cifra e ridecifra un item come handle opaco (doc 20 §5): i byte
+        // della chiave non escono mai dalla superficie pubblica.
+        let b = bundle();
+        let vk = unlock_with_password(
+            PASSWORD,
+            &SECRET_KEY,
+            &b.password_envelope,
+            &b.kdf_params_cbor,
+            &ACCOUNT,
+        )
+        .unwrap();
+        let item_id = [0xEE; ID_LEN];
+        let content = b"contenuto-item-di-prova";
+        let (ct, wcek) = vk.encrypt_item(&VAULT_ID, &item_id, content).unwrap();
+        let got = vk.decrypt_item(&VAULT_ID, &item_id, &ct, &wcek).unwrap();
+        assert_eq!(&got[..], content);
+        // Trapianto su un altro item_id → DecryptFailed (binding AAD, doc 16 §5).
+        let altro_item = [0x00; ID_LEN];
+        assert!(matches!(
+            vk.decrypt_item(&VAULT_ID, &altro_item, &ct, &wcek),
+            Err(CoreError::DecryptFailed)
+        ));
     }
 
     #[test]

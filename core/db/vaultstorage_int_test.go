@@ -26,6 +26,10 @@ func itemBody(ct, cek []byte) string {
 	return fmt.Sprintf(`{"ciphertext":%q,"wrapped_cek":%q}`, b64(ct), b64(cek))
 }
 
+func itemBodyWithID(id string, ct, cek []byte) string {
+	return fmt.Sprintf(`{"id":%q,"ciphertext":%q,"wrapped_cek":%q}`, id, b64(ct), b64(cek))
+}
+
 func manifestBody(manifest, sig []byte, version int) string {
 	return fmt.Sprintf(`{"manifest":%q,"signature":%q,"version":%d}`, b64(manifest), b64(sig), version)
 }
@@ -108,6 +112,41 @@ func TestVaultStorageHappyPath(t *testing.T) {
 	assertStatus(t, reqWithToken(t, router, http.MethodDelete, "/v1/items/"+id, tokA), http.StatusNoContent)
 }
 
+// TestCreateItemWithClientID copre l'id scelto dal client (necessario per il binding AAD
+// vault_id‖item_id, doc 16 §5; usato dalla CLI del gate 0.10): l'id torna invariato nella
+// risposta, un id duplicato dà 409 e un id malformato 400.
+func TestCreateItemWithClientID(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	pool, _ := setupPreauth(ctx, t)
+	idA := mustRegister(ctx, t, pool, "a@example.com")
+	sessions := session.NewService(pool, time.Hour)
+	tokA := mustIssue(t, ctx, sessions, idA)
+	router := httpserver.NewRouter(httpserver.Deps{Pool: pool, Sessions: sessions, Config: config.Config{}})
+
+	const clientID = "11111111-2222-3333-4444-555555555555"
+	ct, cek := []byte{0xDE, 0xAD}, []byte{0xBE, 0xEF}
+
+	// L'id fornito dal client viene usato tale e quale.
+	w := reqJSON(t, router, http.MethodPost, "/v1/items", tokA, itemBodyWithID(clientID, ct, cek))
+	assertStatus(t, w, http.StatusCreated)
+	var got struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode item: %v", err)
+	}
+	if got.ID != clientID {
+		t.Fatalf("id non rispettato: atteso %s, ottenuto %s", clientID, got.ID)
+	}
+	// Rilettura per quell'id: presente e byte-identico.
+	assertStatus(t, reqWithToken(t, router, http.MethodGet, "/v1/items/"+clientID, tokA), http.StatusOK)
+	// Id duplicato → 409 (non un 500 opaco).
+	assertStatus(t, reqJSON(t, router, http.MethodPost, "/v1/items", tokA, itemBodyWithID(clientID, ct, cek)), http.StatusConflict)
+	// Id malformato → 400.
+	assertStatus(t, reqJSON(t, router, http.MethodPost, "/v1/items", tokA, itemBodyWithID("non-un-uuid", ct, cek)), http.StatusBadRequest)
+}
+
 func TestVaultStorageIDOR(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -127,4 +166,38 @@ func TestVaultStorageIDOR(t *testing.T) {
 	assertStatus(t, reqWithToken(t, router, http.MethodDelete, "/v1/items/"+itemB, tokA), http.StatusNotFound)
 	// L'item di B non compare nella lista di A.
 	assertItemNotListed(t, router, tokA, itemB)
+}
+
+// TestCreateItemSameIDDifferentAccounts è il test di regressione dell'oracolo cross-tenant
+// (hardening 0.10, migrazione 00003): lo stesso item id scelto da due account diversi NON
+// deve dare conflitto (la chiave è composita (vault_id, id), unica per-vault). Prima del fix
+// l'id era PK globale → il secondo POST otteneva 409, confermando l'esistenza dell'item
+// dell'altro tenant anche sotto RLS (in tensione con SR-26).
+func TestCreateItemSameIDDifferentAccounts(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	pool, _ := setupPreauth(ctx, t)
+	idA := mustRegister(ctx, t, pool, "a@example.com")
+	idB := mustRegister(ctx, t, pool, "b@example.com")
+	sessions := session.NewService(pool, time.Hour)
+	tokA := mustIssue(t, ctx, sessions, idA)
+	tokB := mustIssue(t, ctx, sessions, idB)
+	router := httpserver.NewRouter(httpserver.Deps{Pool: pool, Sessions: sessions, Config: config.Config{}})
+
+	const sharedID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	ctA, cekA := []byte{0xA1}, []byte{0xA2}
+	ctB, cekB := []byte{0xB1}, []byte{0xB2}
+
+	// A e B creano un item con lo STESSO id: entrambi 201, nessun oracolo cross-tenant.
+	assertStatus(t, reqJSON(t, router, http.MethodPost, "/v1/items", tokA, itemBodyWithID(sharedID, ctA, cekA)), http.StatusCreated)
+	assertStatus(t, reqJSON(t, router, http.MethodPost, "/v1/items", tokB, itemBodyWithID(sharedID, ctB, cekB)), http.StatusCreated)
+
+	// Ciascuno rilegge il PROPRIO item per quell'id (RLS scoping), byte-identico.
+	wA := reqWithToken(t, router, http.MethodGet, "/v1/items/"+sharedID, tokA)
+	assertStatus(t, wA, http.StatusOK)
+	if !strings.Contains(wA.Body.String(), b64(ctA)) {
+		t.Fatalf("A deve rileggere il proprio ciphertext, non quello di B: %s", wA.Body.String())
+	}
+	// Per A un duplicato nel PROPRIO vault resta un conflitto legittimo (409).
+	assertStatus(t, reqJSON(t, router, http.MethodPost, "/v1/items", tokA, itemBodyWithID(sharedID, ctA, cekA)), http.StatusConflict)
 }

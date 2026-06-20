@@ -53,8 +53,12 @@ type Item struct {
 	UpdatedAt  time.Time   `json:"updated_at"`
 }
 
-// ItemInput è il corpo di POST/PUT /items.
+// ItemInput è il corpo di POST/PUT /items. Su POST il client PUÒ fornire l'id (UUID): il
+// core lega `vault_id ‖ item_id` nell'AAD del ciphertext (doc 16 §5), quindi l'id va scelto
+// dal client PRIMA di cifrare. Id assente → lo genera il server (compat. con i client che non
+// cifrano per-item). L'id è opaco al server (zero-knowledge): nessun significato lato server.
 type ItemInput struct {
+	ID         string      `json:"id,omitempty"`
 	Ciphertext httpx.Bytes `json:"ciphertext"`
 	WrappedCEK httpx.Bytes `json:"wrapped_cek"`
 }
