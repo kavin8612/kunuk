@@ -5,10 +5,10 @@
 //! storage opaco: registrazione → login → sblocco → upload di un item cifrato → rilettura e
 //! decifratura → verifica del manifest firmato.
 //!
-//! Limite noto del gate (lacuna doc↔implementazione registrata nel doc 22): `account_id` e
-//! `vault_id` sono scelti/tenuti dal client **in memoria** per l'intera cerimonia. Un
-//! dispositivo "vergine" non può ancora ricostruirli (servirebbe esporli al login con decoy
-//! anti-enumeration): è materia di un task+ADR dedicato.
+//! `account_id` e `vault_id` sono scelti dal client e **persistiti** dal server (ADR-0020,
+//! task 0.11): esposti al login (`login/start`, con decoy anti-enum SR-26) e su `GET /vault`,
+//! così un dispositivo "vergine" (solo email + password + Secret Key) li ricostruisce. La
+//! cerimonia include un passo finale che lo verifica.
 
 pub mod api;
 pub mod ceremony;

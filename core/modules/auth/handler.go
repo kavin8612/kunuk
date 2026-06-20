@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"kunuk.dev/core/internal/httpx"
 )
@@ -44,6 +45,16 @@ func (h *Handler) registerFinish(w http.ResponseWriter, r *http.Request) {
 	var req RegisterFinishRequest
 	if err := httpx.DecodeStrict(w, r, &req); err != nil {
 		httpx.WriteError(w, r, httpx.CodeInvalidRequest, "richiesta non valida")
+		return
+	}
+	// account_id e vault_id sono UUID scelti dal client, legati nelle AAD (doc 16 §3-6): richiesti
+	// e ben formati (l'unicità/eventuale collisione la gestisce register_account, anti-enum).
+	if _, err := uuid.Parse(req.AccountID); err != nil {
+		httpx.WriteError(w, r, httpx.CodeInvalidRequest, "account_id non valido")
+		return
+	}
+	if _, err := uuid.Parse(req.VaultID); err != nil {
+		httpx.WriteError(w, r, httpx.CodeInvalidRequest, "vault_id non valido")
 		return
 	}
 	if err := h.svc.RegisterFinish(r.Context(), req); err != nil {

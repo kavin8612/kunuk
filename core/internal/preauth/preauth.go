@@ -25,6 +25,8 @@ type Querier interface {
 // RegisterParams sono i campi del RegistrationBundle persistiti al server (tutti opachi:
 // ciphertext/verificatori). I campi JSONB arrivano come testo JSON (cast `::jsonb` in SQL).
 type RegisterParams struct {
+	AccountID            string // UUID scelto dal client: account_id legato nelle AAD/AV (doc 16 §3-4)
+	VaultID              string // UUID del vault (generato dal core): vault_id nelle AAD item/manifest (doc 16 §5-6)
 	Email                string
 	PasswordVerifierHash []byte
 	KdfParamsJSON        string
@@ -42,7 +44,7 @@ type RegisterParams struct {
 }
 
 const registerSQL = `SELECT register_account(
-    $1::citext, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)`
+    $1::uuid, $2::uuid, $3::citext, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb)`
 
 // RegisterAccount crea account+buste+vault+credenziale in modo atomico. created=false se
 // l'email è già registrata (anti-enumeration: nessun errore distinguibile, il chiamante
@@ -50,7 +52,7 @@ const registerSQL = `SELECT register_account(
 func RegisterAccount(ctx context.Context, q Querier, p RegisterParams) (accountID string, created bool, err error) {
 	var id *string
 	err = q.QueryRow(ctx, registerSQL,
-		p.Email, p.PasswordVerifierHash, p.KdfParamsJSON, p.RecoveryPubkey,
+		p.AccountID, p.VaultID, p.Email, p.PasswordVerifierHash, p.KdfParamsJSON, p.RecoveryPubkey,
 		p.PasswordWrapped, p.PasskeyWrapped, p.RecoveryWrapped,
 		p.Manifest, p.ManifestPubkey, p.Signature, p.WrappedSigningKey, p.Version,
 		p.CredentialID, p.CredentialDataJSON,

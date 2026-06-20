@@ -13,6 +13,7 @@ import (
 	"fmt"
 
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/google/uuid"
 
 	"kunuk.dev/core/internal/config"
 )
@@ -93,9 +94,11 @@ func decoyUser(secret []byte, email string) *authUser {
 	}
 }
 
-// decoyKdfParams genera parametri KDF plausibili (suite v1, salt deterministico).
+// decoyKdfParams genera parametri KDF plausibili (suite v1, salt deterministico). Il salt usa
+// base64url come i campi binari reali (doc 16 §1): con base64 standard ~metà dei salt avrebbe
+// `+`/`/`, assenti nei valori reali → distinguerebbe l'email inesistente (oracolo SR-26).
 func decoyKdfParams(secret []byte, email string) json.RawMessage {
-	salt := base64.RawStdEncoding.EncodeToString(derive(secret, "salt", email, 16))
+	salt := base64.RawURLEncoding.EncodeToString(derive(secret, "salt", email, 16))
 	return json.RawMessage(fmt.Sprintf(
 		`{"memory_kib":65536,"iterations":3,"parallelism":4,"salt":%q}`, salt))
 }
@@ -103,4 +106,13 @@ func decoyKdfParams(secret []byte, email string) json.RawMessage {
 // decoyVerifierHash è l'obiettivo del confronto a tempo costante quando l'email non esiste.
 func decoyVerifierHash(secret []byte, email string) []byte {
 	return derive(secret, "verifier", email, sha256.Size)
+}
+
+// decoyAccountID è un account_id fittizio ma plausibile (UUID) per login/start su email ignota:
+// stabile per email (un valore che cambia tra chiamate tradirebbe il decoy) e indistinguibile da
+// un account_id reale (anch'esso UUID casuale). Anti-enum, SR-26 (ADR-0020).
+func decoyAccountID(secret []byte, email string) string {
+	var id uuid.UUID // [16]byte: derive() ne restituisce sempre 16 → nessun errore di lunghezza
+	copy(id[:], derive(secret, "account", email, 16))
+	return id.String()
 }

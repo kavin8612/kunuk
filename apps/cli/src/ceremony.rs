@@ -6,16 +6,18 @@
 //! zero-knowledge (SR-21/25): il server conserva e restituisce ciphertext byte-identico, mai
 //! plaintext né chiavi.
 //!
-//! `account_id` e `vault_id` sono scelti/tenuti dal client in memoria per l'intera cerimonia
-//! (opzione del gate; la lacuna multi-dispositivo è registrata nel doc 22).
+//! `account_id`/`vault_id` sono scelti dal client e **persistiti** dal server (ADR-0020): un
+//! passo finale simula un dispositivo vergine che li ricostruisce da `login/start` / `GET /vault`
+//! e ridecifra l'item (task 0.11, colma la lacuna multi-dispositivo del 0.10).
 
-use kunuk_crypto_core::crypto::{kdf_params, rng};
+use kunuk_crypto_core::crypto::kdf_params::{self, KdfParams};
+use kunuk_crypto_core::crypto::rng;
 use kunuk_crypto_core::vault::item::{decode_content, encode_content, ItemContent};
 use kunuk_crypto_core::vault::manifest;
 use kunuk_crypto_core::{derive_auth_verifier, register, unlock_with_password, RegistrationBundle};
 
 use crate::api::{Client, Resp};
-use crate::codec::{b64, unb64, uuid_to_string};
+use crate::codec::{b64, unb64, uuid_from_string, uuid_to_string};
 
 /// Parametri della cerimonia.
 pub struct GateConfig {
@@ -77,11 +79,19 @@ fn sample_item() -> ItemContent {
 
 /// Corpo di `POST /v1/auth/register/finish` dal bundle (campi piatti, doc 12). La passkey è
 /// assente (gate solo-password). `manifest`/`signature` sono lo `signed_empty_manifest` scisso.
-fn register_body(email: &str, bundle: &RegistrationBundle) -> Result<serde_json::Value, String> {
+/// `account_id`/`vault_id` sono scelti dal client e persistiti dal server (ADR-0020): permettono
+/// a un dispositivo vergine di ricostruirli al login.
+fn register_body(
+    email: &str,
+    bundle: &RegistrationBundle,
+    account_id: &[u8; 16],
+) -> Result<serde_json::Value, String> {
     let (manifest_body, signature) =
         manifest::split_signed_manifest(&bundle.signed_empty_manifest).map_err(ce)?;
     Ok(serde_json::json!({
         "email": email,
+        "account_id": uuid_to_string(account_id),
+        "vault_id": uuid_to_string(&bundle.vault_id),
         "password_verifier": b64(&bundle.auth_verifier[..]),
         "kdf_params": kdf_params_json(&bundle.kdf_params_cbor)?,
         "recovery_pubkey": b64(&bundle.recovery_pubkey),
@@ -107,10 +117,10 @@ pub fn run_gate(cfg: &GateConfig, log: &mut dyn FnMut(&str)) -> Result<(), Strin
     let secret_key = bundle.emergency_kit.reveal_secret_key().map_err(ce)?;
     let signing_pubkey = bundle.signing_pubkey;
 
-    let body = register_body(&cfg.email, &bundle)?;
+    let body = register_body(&cfg.email, &bundle, &account_id)?;
     let r = client.post_json("/v1/auth/register/finish", None, &body)?;
     expect_status(&r, 201, "registrazione")?;
-    log("1/6 registrazione → 201 (bundle opaco caricato)");
+    log("1/7 registrazione → 201 (bundle opaco caricato)");
 
     // ── 2) Login via password: deriva il verificatore e ottiene un token di sessione. ──────
     let r = client.post_json(
@@ -142,7 +152,7 @@ pub fn run_gate(cfg: &GateConfig, log: &mut dyn FnMut(&str)) -> Result<(), Strin
         .and_then(|v| v.as_str())
         .ok_or("login/finish: session_token mancante")?
         .to_string();
-    log("2/6 login → token di sessione ottenuto");
+    log("2/7 login → token di sessione ottenuto");
 
     // ── 3) Sblocco: scarica la busta password dal server e apre la VK (round-trip opaco). ──
     let r = client.get("/v1/envelopes", Some(&token))?;
@@ -156,7 +166,7 @@ pub fn run_gate(cfg: &GateConfig, log: &mut dyn FnMut(&str)) -> Result<(), Strin
         &account_id,
     )
     .map_err(ce)?;
-    log("3/6 sblocco → VaultKey aperta dalla busta restituita dal server");
+    log("3/7 sblocco → VaultKey aperta dalla busta restituita dal server");
 
     // ── 4) Upload: cifra un item con la VK (id scelto dal client, AAD legata) e lo carica. ─
     let plaintext = sample_item();
@@ -187,7 +197,7 @@ pub fn run_gate(cfg: &GateConfig, log: &mut dyn FnMut(&str)) -> Result<(), Strin
             "id item non rispettato: inviato {item_id_str}, restituito {returned_id}"
         ));
     }
-    log("4/6 upload → item cifrato caricato (id scelto dal client)");
+    log("4/7 upload → item cifrato caricato (id scelto dal client)");
 
     // ── 5) Decifratura: rilegge il ciphertext e lo decifra; il plaintext deve coincidere. ──
     let r = client.get(&format!("/v1/items/{item_id_str}"), Some(&token))?;
@@ -205,7 +215,7 @@ pub fn run_gate(cfg: &GateConfig, log: &mut dyn FnMut(&str)) -> Result<(), Strin
     if recovered != plaintext {
         return Err("il contenuto decifrato non coincide con l'originale".into());
     }
-    log("5/6 decifratura → plaintext identico all'originale (zero-knowledge)");
+    log("5/7 decifratura → plaintext identico all'originale (zero-knowledge)");
 
     // ── 6) Verifica del manifest firmato restituito dal server (anti-rollback). ────────────
     let r = client.get("/v1/vault", Some(&token))?;
@@ -224,9 +234,117 @@ pub fn run_gate(cfg: &GateConfig, log: &mut dyn FnMut(&str)) -> Result<(), Strin
     if view.version != 1 {
         return Err(format!("versione manifest inattesa: {}", view.version));
     }
-    log("6/6 manifest → firma valida, versione 1, pubkey pinned coincide");
-
+    log("6/7 manifest → firma valida, versione 1, pubkey pinned coincide");
     vk.lock();
+
+    // ── 7) Dispositivo VERGINE (task 0.11): senza stato locale, ricostruisce gli id dal server. ─
+    verify_virgin_device(
+        &client,
+        cfg,
+        &secret_key[..],
+        &account_id,
+        &vault_id,
+        &plaintext,
+        log,
+    )?;
+    Ok(())
+}
+
+/// Simula un **dispositivo vergine** (task 0.11): un secondo dispositivo che possiede solo
+/// email + password + Secret Key (Emergency Kit) e NESSUN `account_id`/`vault_id` locale. Li
+/// recupera dal server — `account_id` da `login/start` (reale, indistinguibile dal decoy
+/// anti-enum SR-26), `vault_id` da `GET /vault` (autenticato) — poi sblocca e ridecifra l'item.
+/// Prova che la lacuna multi-dispositivo del 0.10 è colmata (ADR-0020).
+#[allow(clippy::too_many_arguments)]
+fn verify_virgin_device(
+    client: &Client,
+    cfg: &GateConfig,
+    secret_key: &[u8],
+    expected_account_id: &[u8; 16],
+    expected_vault_id: &[u8; 16],
+    expected_plaintext: &ItemContent,
+    log: &mut dyn FnMut(&str),
+) -> Result<(), String> {
+    let password = cfg.password.as_bytes();
+
+    // login/start espone account_id (reale) e kdf_params: il device vergine non li aveva. Deve
+    // coincidere con quello scelto in registrazione (persistito dal server, ADR-0020).
+    let r = client.post_json(
+        "/v1/auth/login/start",
+        None,
+        &serde_json::json!({ "email": cfg.email }),
+    )?;
+    expect_status(&r, 200, "login/start (vergine)")?;
+    let ls = r.json()?;
+    let server_account_id = field_str(&ls, "account_id")?;
+    if server_account_id != uuid_to_string(expected_account_id) {
+        return Err("account_id da login/start ≠ registrazione (non persistito?)".into());
+    }
+    let account_id = uuid_from_string(server_account_id)?;
+
+    // Ricostruisce kdf_params_cbor dal JSON del server. Il gate usa i costi v1 (Argon2id di
+    // riferimento): salt + KdfParams::v1 riproducono il CBOR canonico legato nell'AAD.
+    let kdf = ls
+        .get("kdf_params")
+        .ok_or("login/start: kdf_params mancante")?;
+    let salt: [u8; 16] = unb64(field_str(kdf, "salt")?)?
+        .try_into()
+        .map_err(|_| "salt kdf_params di lunghezza errata".to_string())?;
+    let kdf_cbor = kdf_params::encode(&KdfParams::v1(salt)).map_err(ce)?;
+
+    // Deriva l'AV con l'account_id recuperato e fa login.
+    let av = derive_auth_verifier(password, secret_key, &kdf_cbor, &account_id).map_err(ce)?;
+    let r = client.post_json(
+        "/v1/auth/login/finish",
+        None,
+        &serde_json::json!({ "email": cfg.email, "password_verifier": b64(&av[..]) }),
+    )?;
+    expect_status(&r, 200, "login/finish (vergine)")?;
+    let token = field_str(&r.json()?, "session_token")?.to_string();
+
+    // Sblocca dalla busta password del server, con l'account_id recuperato nell'AAD.
+    let r = client.get("/v1/envelopes", Some(&token))?;
+    expect_status(&r, 200, "GET /envelopes (vergine)")?;
+    let password_envelope = find_password_envelope(&r.json()?)?;
+    let vk = unlock_with_password(
+        password,
+        secret_key,
+        &password_envelope,
+        &kdf_cbor,
+        &account_id,
+    )
+    .map_err(ce)?;
+
+    // vault_id dal server (autenticato): deve coincidere con quello di registrazione.
+    let r = client.get("/v1/vault", Some(&token))?;
+    expect_status(&r, 200, "GET /vault (vergine)")?;
+    let vault = r.json()?;
+    let server_vault_id = field_str(&vault, "vault_id")?;
+    if server_vault_id != uuid_to_string(expected_vault_id) {
+        return Err("vault_id da GET /vault ≠ registrazione (non persistito?)".into());
+    }
+    let vault_id = uuid_from_string(server_vault_id)?;
+
+    // Elenca gli item, prende il primo e lo ridecifra con gli id recuperati dal server.
+    let r = client.get("/v1/items", Some(&token))?;
+    expect_status(&r, 200, "GET /items (vergine)")?;
+    let items = r.json()?;
+    let first = items
+        .get("items")
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.first())
+        .ok_or("GET /items: nessun item da ridecifrare")?;
+    let item_id = uuid_from_string(field_str(first, "id")?)?;
+    let ciphertext = unb64(field_str(first, "ciphertext")?)?;
+    let wrapped_cek = unb64(field_str(first, "wrapped_cek")?)?;
+    let decrypted = vk
+        .decrypt_item(&vault_id, &item_id, &ciphertext, &wrapped_cek)
+        .map_err(ce)?;
+    if decode_content(&decrypted).map_err(ce)? != *expected_plaintext {
+        return Err("device vergine: plaintext ridecifrato ≠ originale".into());
+    }
+    vk.lock();
+    log("7/7 device vergine → account_id/vault_id ricostruiti dal server, item ridecifrato");
     Ok(())
 }
 
@@ -301,11 +419,13 @@ mod tests {
         let mut account_id = [0u8; 16];
         rng::fill(&mut account_id).unwrap();
         let bundle = register(PASSWORD, None, &account_id).unwrap();
-        let body = register_body("e2e@example.com", &bundle).unwrap();
+        let body = register_body("e2e@example.com", &bundle, &account_id).unwrap();
 
         // Campi richiesti dal contratto register/finish (doc 12).
         for k in [
             "email",
+            "account_id",
+            "vault_id",
             "password_verifier",
             "kdf_params",
             "recovery_pubkey",

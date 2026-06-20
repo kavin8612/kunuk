@@ -24,6 +24,8 @@ type RegisterStartResponse struct {
 type RegisterFinishRequest struct {
 	Email              string          `json:"email"`
 	Handle             string          `json:"handle"`
+	AccountID          string          `json:"account_id"` // UUID scelto dal client (doc 16 §3-4); persistito come account.id
+	VaultID            string          `json:"vault_id"`   // UUID del vault dal bundle (doc 16 §5-6); persistito come vault.id
 	PasskeyAttestation json.RawMessage `json:"passkey_attestation"`
 	PasswordVerifier   httpx.Bytes     `json:"password_verifier"`
 	KdfParams          json.RawMessage `json:"kdf_params"`
@@ -47,6 +49,10 @@ type LoginStartResponse struct {
 	Handle                 string                        `json:"handle"`
 	WebAuthnRequestOptions *protocol.CredentialAssertion `json:"webauthn_request_options"`
 	KdfParams              json.RawMessage               `json:"kdf_params"`
+	// AccountID serve al client (anche su un dispositivo vergine) per derivare l'AV e aprire le
+	// buste (doc 16 §3-4). Reale per email nota, decoy stabile per email ignota (anti-enum,
+	// SR-26): indistinguibile. Vedi ADR-0020.
+	AccountID string `json:"account_id"`
 }
 
 // LoginFinish: assertion passkey OPPURE verificatore password.
