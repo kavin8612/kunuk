@@ -23,14 +23,17 @@ psql_super() {
 
 # Crea il ruolo se manca, poi (sempre) imposta password e attributi a privilegio minimo.
 # La password passa via variabile psql `:'pw'` (quoting/escape sicuri), mai concatenata.
+# NB: l'interpolazione di `:'pw'` avviene solo leggendo da stdin/file, NON con `-c` (con
+# `-c` la stringa va al server letterale → syntax error). Per questo l'ALTER va via heredoc.
 ensure_role() {
   local role="$1" pw="$2" exists
   exists="$(psql_super -tAc "SELECT 1 FROM pg_roles WHERE rolname = '$role'")"
   if [ "$exists" != "1" ]; then
     psql_super -c "CREATE ROLE \"$role\" LOGIN"
   fi
-  psql_super -v "pw=$pw" -c \
-    "ALTER ROLE \"$role\" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD :'pw'"
+  psql_super -v "pw=$pw" <<SQL
+ALTER ROLE "$role" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD :'pw'
+SQL
 }
 
 # Estensioni (gen_random_uuid è in core da PG13; citext serve per l'email case-insensitive).

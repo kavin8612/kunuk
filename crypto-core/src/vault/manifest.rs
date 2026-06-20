@@ -122,6 +122,33 @@ pub fn verify_manifest(
     })
 }
 
+/// Come [`verify_manifest`] ma accetta la chiave pubblica come **byte grezzi** (32B): comoda
+/// per i client (CLI, binding) che ricevono la `manifest_pubkey` dal server senza dipendere
+/// da `ed25519-dalek`. Pubkey malformata (punto non valido) → `InvalidInput`; la crittografia
+/// resta confinata nel core (SR-1).
+pub fn verify_manifest_with_pubkey(
+    pubkey: &[u8; 32],
+    signed_manifest: &[u8],
+    expected_vault_id: &[u8; ID_LEN],
+    min_version: u64,
+) -> CoreResult<ManifestView> {
+    let vk = VerifyingKey::from_bytes(pubkey).map_err(|_| CoreError::InvalidInput)?;
+    verify_manifest(&vk, signed_manifest, expected_vault_id, min_version)
+}
+
+/// Scinde un manifest firmato da [`sign_manifest`] (`header ‖ cbor ‖ signature`) nei due
+/// campi che l'API espone separatamente (doc 12): il corpo `manifest = header ‖ cbor` e la
+/// `signature` (64 byte). Il server li conserva opachi e li restituisce distinti su
+/// `GET /vault`; il client li **ricompone** (`manifest ‖ signature`) per [`verify_manifest`].
+/// Busta più corta del minimo (header + firma) → `InvalidInput`.
+pub fn split_signed_manifest(signed: &[u8]) -> CoreResult<(&[u8], &[u8])> {
+    if signed.len() < HEADER_LEN + SIGNATURE_LEN {
+        return Err(CoreError::InvalidInput);
+    }
+    let sig_start = signed.len() - SIGNATURE_LEN;
+    Ok((&signed[..sig_start], &signed[sig_start..]))
+}
+
 /// AAD della busta chiave di firma (doc 16 §6):
 /// `header ‖ "kunuk/v1/signing-key" ‖ vault_id`.
 fn signing_key_aad(vault_id: &[u8; ID_LEN]) -> Vec<u8> {
@@ -207,6 +234,43 @@ mod tests {
         let view = verify_manifest(&vk, &signed, &[0x66; ID_LEN], 3).unwrap();
         assert_eq!(view.version, 3);
         assert_eq!(view.items.len(), 2);
+    }
+
+    #[test]
+    fn split_signed_manifest_ricompone_e_verifica() {
+        let (sk, vk) = keypair_from_seed(&[0x11; 32]);
+        let signed = sign_manifest(&sk, &content()).unwrap();
+        let (body, sig) = split_signed_manifest(&signed).unwrap();
+        assert_eq!(sig.len(), SIGNATURE_LEN);
+        // Ricomposizione body ‖ signature == manifest firmato originale.
+        let mut recombined = Vec::new();
+        recombined.extend_from_slice(body);
+        recombined.extend_from_slice(sig);
+        assert_eq!(recombined, signed);
+        // Il ricomposto verifica con la pubkey pinned (round-trip API → core).
+        assert!(verify_manifest(&vk, &recombined, &[0x66; ID_LEN], 3).is_ok());
+    }
+
+    #[test]
+    fn split_signed_manifest_busta_corta_invalid_input() {
+        assert!(matches!(
+            split_signed_manifest(&[0x00; HEADER_LEN + SIGNATURE_LEN - 1]),
+            Err(CoreError::InvalidInput)
+        ));
+    }
+
+    #[test]
+    fn verify_manifest_with_pubkey_bytes() {
+        let (sk, vk) = keypair_from_seed(&[0x11; 32]);
+        let signed = sign_manifest(&sk, &content()).unwrap();
+        let view =
+            verify_manifest_with_pubkey(&vk.to_bytes(), &signed, &[0x66; ID_LEN], 3).unwrap();
+        assert_eq!(view.version, 3);
+        // Pubkey malformata → InvalidInput (non un panico).
+        assert!(matches!(
+            verify_manifest_with_pubkey(&[0xFF; 32], &signed, &[0x66; ID_LEN], 3),
+            Err(CoreError::InvalidInput) | Err(CoreError::AuthFailed)
+        ));
     }
 
     #[test]

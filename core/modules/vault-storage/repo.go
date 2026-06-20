@@ -3,10 +3,12 @@ package vaultstorage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"kunuk.dev/core/internal/httpx"
 )
@@ -73,19 +75,38 @@ func updateManifest(ctx context.Context, tx pgx.Tx, manifest, sig []byte, versio
 }
 
 // ── Item ──────────────────────────────────────────────────────────────────────
+// L'id può arrivare dal client (UUID legato nell'AAD del ciphertext, doc 16 §5) o, se assente,
+// lo genera il DB. La RLS (p_item) verifica comunque che il vault_id appartenga all'account.
+// La chiave primaria è composita (vault_id, id) (migrazione 00003): l'unicità dell'id è
+// per-vault, quindi un 23505 qui significa "id già usato in QUESTO vault" — niente oracolo
+// cross-tenant (SR-26).
 const insertItemSQL = `INSERT INTO item (vault_id, ciphertext, wrapped_cek)
     VALUES ((SELECT id FROM vault WHERE account_id = current_account_id()), $1, $2)
     RETURNING id, deleted, created_at, updated_at`
+const insertItemWithIDSQL = `INSERT INTO item (id, vault_id, ciphertext, wrapped_cek)
+    VALUES ($1::uuid, (SELECT id FROM vault WHERE account_id = current_account_id()), $2, $3)
+    RETURNING id, deleted, created_at, updated_at`
 
-func insertItem(ctx context.Context, tx pgx.Tx, ciphertext, cek []byte) (Item, error) {
-	var id string
+func insertItem(ctx context.Context, tx pgx.Tx, id string, ciphertext, cek []byte) (Item, error) {
+	var row pgx.Row
+	if id == "" {
+		row = tx.QueryRow(ctx, insertItemSQL, ciphertext, cek)
+	} else {
+		row = tx.QueryRow(ctx, insertItemWithIDSQL, id, ciphertext, cek)
+	}
+	var gotID string
 	var deleted bool
 	var created, updated time.Time
-	if err := tx.QueryRow(ctx, insertItemSQL, ciphertext, cek).Scan(&id, &deleted, &created, &updated); err != nil {
+	if err := row.Scan(&gotID, &deleted, &created, &updated); err != nil {
+		// Id fornito dal client già in uso NEL VAULT → conflitto (409), non un 500 opaco.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return Item{}, ErrItemExists
+		}
 		return Item{}, fmt.Errorf("insert item: %w", err)
 	}
 	return Item{
-		ID: id, Ciphertext: httpx.Bytes(ciphertext), WrappedCEK: httpx.Bytes(cek),
+		ID: gotID, Ciphertext: httpx.Bytes(ciphertext), WrappedCEK: httpx.Bytes(cek),
 		Deleted: deleted, CreatedAt: created, UpdatedAt: updated,
 	}, nil
 }

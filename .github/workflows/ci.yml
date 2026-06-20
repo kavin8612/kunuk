@@ -25,6 +25,7 @@ jobs:
     outputs:
       crypto-core: ${{ steps.filter.outputs.crypto-core }}
       core:        ${{ steps.filter.outputs.core }}
+      cli:         ${{ steps.filter.outputs.cli }}
       frontend:    ${{ steps.filter.outputs.frontend }}
       infra:       ${{ steps.filter.outputs.infra }}
     steps:
@@ -38,6 +39,10 @@ jobs:
               - '.github/workflows/ci.yml'
             core:
               - 'core/**'
+              - '.github/workflows/ci.yml'
+            cli:
+              - 'apps/cli/**'
+              - 'crypto-core/**'
               - '.github/workflows/ci.yml'
             frontend:
               - 'frontend/**'
@@ -96,6 +101,59 @@ jobs:
       # Install idempotente: se la cache (~/.cargo/bin) ha già 0.22.2 si salta
       # (veloce), altrimenti si installa con --force. Senza --force cargo install
       # fallirebbe con "binary already exists" sul binario ripristinato dalla cache.
+      - name: Installa cargo-audit 0.22.2
+        run: |
+          if ! command -v cargo-audit >/dev/null || ! cargo audit --version 2>/dev/null | grep -q "0.22.2"; then
+            cargo install cargo-audit --version 0.22.2 --locked --force
+          fi
+
+      - name: Audit dipendenze (cargo-audit)
+        run: cargo audit
+
+  # ── Job 1b: CLI (Rust) ──────────────────────────────────────────────────────
+  # Gate bloccanti: rustfmt, clippy (SAST), test (gli unit + l'E2E gated che si salta
+  # senza KUNUK_API_URL), cargo-audit. Dipende dal crypto-core (path dep): un suo
+  # cambiamento ritriggera questo job (vedi path-filter).
+  cli:
+    name: cli (Rust)
+    needs: changes
+    if: needs.changes.outputs.cli == 'true'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: apps/cli
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - name: Installa toolchain Rust 1.96.0
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            apps/cli/target
+          key: ${{ runner.os }}-cargo-cli-${{ hashFiles('apps/cli/Cargo.lock') }}-audit-0.22.2
+          restore-keys: |
+            ${{ runner.os }}-cargo-cli-${{ hashFiles('apps/cli/Cargo.lock') }}-
+            ${{ runner.os }}-cargo-cli-
+
+      - name: Formato (rustfmt)
+        run: cargo fmt --check
+
+      - name: Lint + SAST (clippy)
+        run: cargo clippy --all-targets -- -D warnings
+
+      # `cargo test` esegue gli unit + l'E2E in tests/e2e.rs, che si salta da solo quando
+      # KUNUK_API_URL non è impostata (niente Docker nella CI unitaria, doc 19 §6).
+      - name: Test
+        run: cargo test
+
       - name: Installa cargo-audit 0.22.2
         run: |
           if ! command -v cargo-audit >/dev/null || ! cargo audit --version 2>/dev/null | grep -q "0.22.2"; then
@@ -221,13 +279,14 @@ jobs:
   ci-gate:
     name: Gate CI
     if: always()
-    needs: [crypto-core, core, frontend, infra]
+    needs: [crypto-core, cli, core, frontend, infra]
     runs-on: ubuntu-24.04
     steps:
       - name: Verifica risultati di tutti i job
         run: |
           results=(
             "${{ needs.crypto-core.result }}"
+            "${{ needs.cli.result }}"
             "${{ needs.core.result }}"
             "${{ needs.frontend.result }}"
             "${{ needs.infra.result }}"
