@@ -36,7 +36,9 @@ pub struct ItemRef {
 }
 
 /// Contenuto del manifest (doc 16 §6): vault, versione monotona, elenco delle voci e
-/// clock CRDT (byte opachi finché il formato non è definito al task 1.2).
+/// clock CRDT. `items`/`crdt_clock` sono lo snapshot firmato della directory risolta dal
+/// modulo `sync` ([`crate::sync::MergeResult`], task 1.2, ADR-0022): qui restano byte/voci
+/// opachi, il merge vive nel modulo `sync`.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
 #[cbor(map)]
 pub struct ManifestContent {

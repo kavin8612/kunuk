@@ -12,9 +12,12 @@
 
 use kunuk_crypto_core::crypto::kdf_params::{self, KdfParams};
 use kunuk_crypto_core::crypto::rng;
+use kunuk_crypto_core::sync::{MergeResult, SyncDoc};
 use kunuk_crypto_core::vault::item::{decode_content, encode_content, ItemContent, ItemData};
 use kunuk_crypto_core::vault::manifest;
-use kunuk_crypto_core::{derive_auth_verifier, register, unlock_with_password, RegistrationBundle};
+use kunuk_crypto_core::{
+    derive_auth_verifier, register, unlock_with_password, RegistrationBundle, VaultKey,
+};
 
 use crate::api::{Client, Resp};
 use crate::codec::{b64, unb64, uuid_from_string, uuid_to_string};
@@ -126,7 +129,7 @@ pub fn run_gate(cfg: &GateConfig, log: &mut dyn FnMut(&str)) -> Result<(), Strin
     let body = register_body(&cfg.email, &bundle, &account_id)?;
     let r = client.post_json("/v1/auth/register/finish", None, &body)?;
     expect_status(&r, 201, "registrazione")?;
-    log("1/7 registrazione → 201 (bundle opaco caricato)");
+    log("1/8 registrazione → 201 (bundle opaco caricato)");
 
     // ── 2) Login via password: deriva il verificatore e ottiene un token di sessione. ──────
     let r = client.post_json(
@@ -158,7 +161,7 @@ pub fn run_gate(cfg: &GateConfig, log: &mut dyn FnMut(&str)) -> Result<(), Strin
         .and_then(|v| v.as_str())
         .ok_or("login/finish: session_token mancante")?
         .to_string();
-    log("2/7 login → token di sessione ottenuto");
+    log("2/8 login → token di sessione ottenuto");
 
     // ── 3) Sblocco: scarica la busta password dal server e apre la VK (round-trip opaco). ──
     let r = client.get("/v1/envelopes", Some(&token))?;
@@ -172,7 +175,7 @@ pub fn run_gate(cfg: &GateConfig, log: &mut dyn FnMut(&str)) -> Result<(), Strin
         &account_id,
     )
     .map_err(ce)?;
-    log("3/7 sblocco → VaultKey aperta dalla busta restituita dal server");
+    log("3/8 sblocco → VaultKey aperta dalla busta restituita dal server");
 
     // ── 4) Upload: cifra un item con la VK (id scelto dal client, AAD legata) e lo carica. ─
     let plaintext = sample_item();
@@ -203,7 +206,7 @@ pub fn run_gate(cfg: &GateConfig, log: &mut dyn FnMut(&str)) -> Result<(), Strin
             "id item non rispettato: inviato {item_id_str}, restituito {returned_id}"
         ));
     }
-    log("4/7 upload → item cifrato caricato (id scelto dal client)");
+    log("4/8 upload → item cifrato caricato (id scelto dal client)");
 
     // ── 5) Decifratura: rilegge il ciphertext e lo decifra; il plaintext deve coincidere. ──
     let r = client.get(&format!("/v1/items/{item_id_str}"), Some(&token))?;
@@ -221,7 +224,7 @@ pub fn run_gate(cfg: &GateConfig, log: &mut dyn FnMut(&str)) -> Result<(), Strin
     if recovered != plaintext {
         return Err("il contenuto decifrato non coincide con l'originale".into());
     }
-    log("5/7 decifratura → plaintext identico all'originale (zero-knowledge)");
+    log("5/8 decifratura → plaintext identico all'originale (zero-knowledge)");
 
     // ── 6) Verifica del manifest firmato restituito dal server (anti-rollback). ────────────
     let r = client.get("/v1/vault", Some(&token))?;
@@ -240,7 +243,7 @@ pub fn run_gate(cfg: &GateConfig, log: &mut dyn FnMut(&str)) -> Result<(), Strin
     if view.version != 1 {
         return Err(format!("versione manifest inattesa: {}", view.version));
     }
-    log("6/7 manifest → firma valida, versione 1, pubkey pinned coincide");
+    log("6/8 manifest → firma valida, versione 1, pubkey pinned coincide");
     vk.lock();
 
     // ── 7) Dispositivo VERGINE (task 0.11): senza stato locale, ricostruisce gli id dal server. ─
@@ -253,6 +256,9 @@ pub fn run_gate(cfg: &GateConfig, log: &mut dyn FnMut(&str)) -> Result<(), Strin
         &plaintext,
         log,
     )?;
+
+    // ── 8) Sync CRDT (task 1.2): due dispositivi convergono sulla stessa directory. ────────
+    verify_two_device_sync(&client, cfg, &secret_key[..], &account_id, &vault_id, log)?;
     Ok(())
 }
 
@@ -271,10 +277,8 @@ fn verify_virgin_device(
     expected_plaintext: &ItemContent,
     log: &mut dyn FnMut(&str),
 ) -> Result<(), String> {
-    let password = cfg.password.as_bytes();
-
-    // login/start espone account_id (reale) e kdf_params: il device vergine non li aveva. Deve
-    // coincidere con quello scelto in registrazione (persistito dal server, ADR-0020).
+    // login/start espone account_id (reale): il device vergine non lo aveva. Deve coincidere
+    // con quello scelto in registrazione (persistito dal server, ADR-0020).
     let r = client.post_json(
         "/v1/auth/login/start",
         None,
@@ -288,38 +292,9 @@ fn verify_virgin_device(
     }
     let account_id = uuid_from_string(server_account_id)?;
 
-    // Ricostruisce kdf_params_cbor dal JSON del server. Il gate usa i costi v1 (Argon2id di
-    // riferimento): salt + KdfParams::v1 riproducono il CBOR canonico legato nell'AAD.
-    let kdf = ls
-        .get("kdf_params")
-        .ok_or("login/start: kdf_params mancante")?;
-    let salt: [u8; 16] = unb64(field_str(kdf, "salt")?)?
-        .try_into()
-        .map_err(|_| "salt kdf_params di lunghezza errata".to_string())?;
-    let kdf_cbor = kdf_params::encode(&KdfParams::v1(salt)).map_err(ce)?;
-
-    // Deriva l'AV con l'account_id recuperato e fa login.
-    let av = derive_auth_verifier(password, secret_key, &kdf_cbor, &account_id).map_err(ce)?;
-    let r = client.post_json(
-        "/v1/auth/login/finish",
-        None,
-        &serde_json::json!({ "email": cfg.email, "password_verifier": b64(&av[..]) }),
-    )?;
-    expect_status(&r, 200, "login/finish (vergine)")?;
-    let token = field_str(&r.json()?, "session_token")?.to_string();
-
-    // Sblocca dalla busta password del server, con l'account_id recuperato nell'AAD.
-    let r = client.get("/v1/envelopes", Some(&token))?;
-    expect_status(&r, 200, "GET /envelopes (vergine)")?;
-    let password_envelope = find_password_envelope(&r.json()?)?;
-    let vk = unlock_with_password(
-        password,
-        secret_key,
-        &password_envelope,
-        &kdf_cbor,
-        &account_id,
-    )
-    .map_err(ce)?;
+    // Stesso sblocco di un dispositivo qualunque, una volta noto l'account_id (condiviso con
+    // verify_two_device_sync): deriva kdf_params/AV, fa login, apre la busta password.
+    let (vk, token) = unlock_fresh_device(client, cfg, secret_key, &account_id)?;
 
     // vault_id dal server (autenticato): deve coincidere con quello di registrazione.
     let r = client.get("/v1/vault", Some(&token))?;
@@ -350,7 +325,175 @@ fn verify_virgin_device(
         return Err("device vergine: plaintext ridecifrato ≠ originale".into());
     }
     vk.lock();
-    log("7/7 device vergine → account_id/vault_id ricostruiti dal server, item ridecifrato");
+    log("7/8 device vergine → account_id/vault_id ricostruiti dal server, item ridecifrato");
+    Ok(())
+}
+
+/// Sblocca un dispositivo "fresco" indipendente: login via password (deriva l'AV) + apertura
+/// della busta password ricevuta dal server. Ogni chiamata produce una sessione e una
+/// `VaultKey` proprie, come farebbero due dispositivi reali che condividono solo
+/// email/password/Secret Key (mai un segreto di un dispositivo trasferito all'altro).
+fn unlock_fresh_device(
+    client: &Client,
+    cfg: &GateConfig,
+    secret_key: &[u8],
+    account_id: &[u8; 16],
+) -> Result<(VaultKey, String), String> {
+    let password = cfg.password.as_bytes();
+    let r = client.post_json(
+        "/v1/auth/login/start",
+        None,
+        &serde_json::json!({ "email": cfg.email }),
+    )?;
+    expect_status(&r, 200, "login/start (sync)")?;
+    let ls = r.json()?;
+    let kdf = ls
+        .get("kdf_params")
+        .ok_or("login/start: kdf_params mancante")?;
+    let salt: [u8; 16] = unb64(field_str(kdf, "salt")?)?
+        .try_into()
+        .map_err(|_| "salt kdf_params di lunghezza errata".to_string())?;
+    let kdf_cbor = kdf_params::encode(&KdfParams::v1(salt)).map_err(ce)?;
+
+    let av = derive_auth_verifier(password, secret_key, &kdf_cbor, account_id).map_err(ce)?;
+    let r = client.post_json(
+        "/v1/auth/login/finish",
+        None,
+        &serde_json::json!({ "email": cfg.email, "password_verifier": b64(&av[..]) }),
+    )?;
+    expect_status(&r, 200, "login/finish (sync)")?;
+    let token = field_str(&r.json()?, "session_token")?.to_string();
+
+    let r = client.get("/v1/envelopes", Some(&token))?;
+    expect_status(&r, 200, "GET /envelopes (sync)")?;
+    let password_envelope = find_password_envelope(&r.json()?)?;
+    let vk = unlock_with_password(
+        password,
+        secret_key,
+        &password_envelope,
+        &kdf_cbor,
+        account_id,
+    )
+    .map_err(ce)?;
+    Ok((vk, token))
+}
+
+/// Cifra l'item di prova e lo carica con l'id dato (id scelto dal client, AAD legata).
+fn upload_dummy_item(
+    client: &Client,
+    vk: &VaultKey,
+    token: &str,
+    vault_id: &[u8; 16],
+    item_id: &[u8; 16],
+) -> Result<(), String> {
+    let cbor = encode_content(&sample_item()).map_err(ce)?;
+    let (ciphertext, wrapped_cek) = vk.encrypt_item(vault_id, item_id, &cbor).map_err(ce)?;
+    let r = client.post_json(
+        "/v1/items",
+        Some(token),
+        &serde_json::json!({
+            "id": uuid_to_string(item_id),
+            "ciphertext": b64(&ciphertext),
+            "wrapped_cek": b64(&wrapped_cek),
+        }),
+    )?;
+    expect_status(&r, 201, "POST /items (sync)")?;
+    Ok(())
+}
+
+/// Estrae i cambiamenti locali non ancora condivisi di `doc`, li cifra con la VK e li pubblica
+/// (doc 20 §8, ADR-0022). Il server li conserva e li inoltra senza leggerli.
+fn push_delta(
+    client: &Client,
+    vk: &VaultKey,
+    token: &str,
+    vault_id: &[u8; 16],
+    doc: &mut SyncDoc,
+) -> Result<(), String> {
+    let encrypted = vk
+        .encode_sync_delta(vault_id, &doc.take_pending_changes())
+        .map_err(ce)?;
+    let r = client.post_json(
+        "/v1/sync/changes",
+        Some(token),
+        &serde_json::json!({ "changes": [{ "ciphertext": b64(&encrypted), "clock": "" }] }),
+    )?;
+    expect_status(&r, 202, "POST /sync/changes")?;
+    Ok(())
+}
+
+/// Scarica tutti i delta del vault (una sola pagina: bastano per la dimostrazione del gate,
+/// non è un loop di paginazione generico) e li applica a `doc`, restituendo la directory
+/// convergente. Riapplicare un delta già noto (es. il proprio, scaricato dal server dopo
+/// averlo pubblicato) è un no-op sicuro: Automerge deduplica per hash del change.
+fn pull_all_deltas(
+    client: &Client,
+    vk: &VaultKey,
+    token: &str,
+    vault_id: &[u8; 16],
+    doc: &mut SyncDoc,
+) -> Result<MergeResult, String> {
+    let r = client.get("/v1/sync/changes", Some(token))?;
+    expect_status(&r, 200, "GET /sync/changes")?;
+    let page = r.json()?;
+    let items = page
+        .get("items")
+        .and_then(|v| v.as_array())
+        .ok_or("GET /sync/changes: items mancante")?;
+    let mut encrypted_deltas = Vec::with_capacity(items.len());
+    for it in items {
+        encrypted_deltas.push(unb64(field_str(it, "ciphertext")?)?);
+    }
+    vk.apply_sync_deltas(doc, vault_id, &encrypted_deltas)
+        .map_err(ce)
+}
+
+/// Simula due dispositivi che editano **offline** voci diverse dello stesso vault, poi
+/// convergono attraverso il server (che si limita a conservare e inoltrare i delta cifrati,
+/// ADR-0022): ciascuno carica un item, registra la modifica nel proprio documento CRDT
+/// locale, pubblica il delta e scarica quello dell'altro. Prova che la directory
+/// (`item_id → versione`) converge identica su entrambi, indipendentemente dall'ordine di
+/// applicazione (proprietà CRDT, non simulata: è la libreria Automerge reale).
+fn verify_two_device_sync(
+    client: &Client,
+    cfg: &GateConfig,
+    secret_key: &[u8],
+    account_id: &[u8; 16],
+    vault_id: &[u8; 16],
+    log: &mut dyn FnMut(&str),
+) -> Result<(), String> {
+    let (vk_a, token_a) = unlock_fresh_device(client, cfg, secret_key, account_id)?;
+    let (vk_b, token_b) = unlock_fresh_device(client, cfg, secret_key, account_id)?;
+
+    let item_a = rand_id()?;
+    upload_dummy_item(client, &vk_a, &token_a, vault_id, &item_a)?;
+    let mut doc_a = SyncDoc::new();
+    doc_a.record_item_change(&item_a, 1, false).map_err(ce)?;
+    push_delta(client, &vk_a, &token_a, vault_id, &mut doc_a)?;
+
+    let item_b = rand_id()?;
+    upload_dummy_item(client, &vk_b, &token_b, vault_id, &item_b)?;
+    let mut doc_b = SyncDoc::new();
+    doc_b.record_item_change(&item_b, 1, false).map_err(ce)?;
+    push_delta(client, &vk_b, &token_b, vault_id, &mut doc_b)?;
+
+    let merged_a = pull_all_deltas(client, &vk_a, &token_a, vault_id, &mut doc_a)?;
+    let merged_b = pull_all_deltas(client, &vk_b, &token_b, vault_id, &mut doc_b)?;
+    if merged_a.items != merged_b.items {
+        return Err(format!(
+            "i due dispositivi non convergono: A={:?} B={:?}",
+            merged_a.items, merged_b.items
+        ));
+    }
+    if merged_a.items.len() != 2 {
+        return Err(format!(
+            "attese 2 voci nella directory convergente, trovate {}",
+            merged_a.items.len()
+        ));
+    }
+    vk_a.lock();
+    vk_b.lock();
+    log("8/8 sync CRDT → due dispositivi convergono sulla stessa directory (item_id→versione)");
     Ok(())
 }
 

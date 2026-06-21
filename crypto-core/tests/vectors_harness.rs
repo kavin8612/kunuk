@@ -13,6 +13,7 @@ use kunuk_crypto_core::crypto::{argon2id, kdf};
 use kunuk_crypto_core::envelope::{self, EnvelopeType};
 use kunuk_crypto_core::keys;
 use kunuk_crypto_core::recovery;
+use kunuk_crypto_core::sync::{self, SyncDoc};
 use kunuk_crypto_core::vault::item;
 use kunuk_crypto_core::vault::manifest::{self, ItemRef, ManifestContent};
 use kunuk_crypto_core::CoreError;
@@ -30,6 +31,7 @@ const CATEGORIES: &[&str] = &[
     "manifest",
     "signing-key",
     "recovery-auth",
+    "sync",
     "negative",
 ];
 
@@ -162,6 +164,17 @@ struct SigningKeyVector {
 }
 
 #[derive(Deserialize)]
+struct SyncVector {
+    vk_hex: String,
+    vault_id_hex: String,
+    local_changes_hex: String,
+    nonce_hex: String,
+    encrypted_delta_hex: String,
+    expected_item_id_hex: String,
+    expected_version: u64,
+}
+
+#[derive(Deserialize)]
 struct ItemRefVector {
     item_id_hex: String,
     item_version: u64,
@@ -210,6 +223,12 @@ enum NegativeVector {
     SigningKey {
         vk_hex: String,
         wrapped_hex: String,
+        vault_id_hex: String,
+        expect_error: String,
+    },
+    Sync {
+        vk_hex: String,
+        encrypted_delta_hex: String,
         vault_id_hex: String,
         expect_error: String,
     },
@@ -438,6 +457,45 @@ fn vettori_signing_key_combaciano() {
 }
 
 #[test]
+fn vettori_sync_combaciano() {
+    let vettori = load_vectors::<SyncVector>(&vectors_root().join("sync"));
+    assert!(!vettori.is_empty(), "nessun vettore sync");
+    for (path, v) in vettori {
+        let vk: [u8; 32] = to_array(&v.vk_hex);
+        let vault: [u8; 16] = to_array(&v.vault_id_hex);
+        let nonce: [u8; 24] = to_array(&v.nonce_hex);
+        let local_changes = hex::decode(&v.local_changes_hex).expect("local_changes_hex valido");
+
+        let encrypted = sync::sync_encode_delta_with_nonce(&vk, &vault, &local_changes, &nonce)
+            .expect("sync_encode_delta_with_nonce");
+        assert_eq!(
+            hex::encode(&encrypted),
+            v.encrypted_delta_hex,
+            "encrypted delta {}",
+            path.display()
+        );
+
+        // Round-trip: il delta applicato a un documento vuoto risolve l'item atteso.
+        let mut doc = SyncDoc::new();
+        let merged = sync::sync_apply_deltas(&mut doc, &vk, &vault, &[encrypted])
+            .expect("sync_apply_deltas");
+        assert_eq!(merged.items.len(), 1, "round-trip sync {}", path.display());
+        assert_eq!(
+            hex::encode(&merged.items[0].item_id[..]),
+            v.expected_item_id_hex,
+            "item_id risolto {}",
+            path.display()
+        );
+        assert_eq!(
+            merged.items[0].item_version,
+            v.expected_version,
+            "version risolta {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
 fn vettori_manifest_combaciano() {
     let vettori = load_vectors::<ManifestVector>(&vectors_root().join("manifest"));
     assert!(!vettori.is_empty(), "nessun vettore manifest");
@@ -550,6 +608,21 @@ fn vettori_negative_falliscono_come_atteso() {
                 let vault: [u8; 16] = to_array(&vault_id_hex);
                 let e =
                     manifest::unwrap_signing_key(&vk, &wrapped, &vault).expect_err("deve fallire");
+                (e, expect_error)
+            }
+            NegativeVector::Sync {
+                vk_hex,
+                encrypted_delta_hex,
+                vault_id_hex,
+                expect_error,
+            } => {
+                let vk: [u8; 32] = to_array(&vk_hex);
+                let vault: [u8; 16] = to_array(&vault_id_hex);
+                let encrypted =
+                    hex::decode(&encrypted_delta_hex).expect("encrypted_delta_hex valido");
+                let mut doc = SyncDoc::new();
+                let e = sync::sync_apply_deltas(&mut doc, &vk, &vault, &[encrypted])
+                    .expect_err("deve fallire");
                 (e, expect_error)
             }
         };
