@@ -69,6 +69,29 @@ impl VaultKey {
     ) -> CoreResult<Zeroizing<Vec<u8>>> {
         item::decrypt_item(self.expose(), vault_id, item_id, ciphertext, wrapped_cek)
     }
+
+    /// Cifra un delta CRDT del sync con questa VK (doc 20 §8, ADR-0022): stesso principio di
+    /// [`encrypt_item`](Self::encrypt_item), il delta della directory è cifrato direttamente
+    /// con la VK (niente CEK, è un oggetto separato dal contenuto degli item).
+    pub fn encode_sync_delta(
+        &self,
+        vault_id: &[u8; ID_LEN],
+        local_changes: &[u8],
+    ) -> CoreResult<Vec<u8>> {
+        crate::sync::sync_encode_delta(self.expose(), vault_id, local_changes)
+    }
+
+    /// Decifra e applica una sequenza di delta CRDT ricevuti, risolvendo la directory
+    /// convergente (doc 20 §8). Come [`decrypt_item`](Self::decrypt_item): i byte della VK non
+    /// lasciano il core.
+    pub fn apply_sync_deltas(
+        &self,
+        doc: &mut crate::sync::SyncDoc,
+        vault_id: &[u8; ID_LEN],
+        encrypted_deltas: &[Vec<u8>],
+    ) -> CoreResult<crate::sync::MergeResult> {
+        crate::sync::sync_apply_deltas(doc, self.expose(), vault_id, encrypted_deltas)
+    }
 }
 
 /// Deriva il verificatore di autenticazione della via password (doc 16 §3) per
@@ -385,5 +408,40 @@ mod tests {
         let vk = unlock_with_passkey(&PRF, b.passkey_envelope.as_ref().unwrap(), &ACCOUNT).unwrap();
         vk.lock();
         // Dopo il lock l'handle non è più disponibile (garantito dal move di `lock`).
+    }
+
+    #[test]
+    fn sync_delta_round_trip_via_vaultkey() {
+        // Come item_round_trip_via_vaultkey, ma per il delta CRDT (doc 20 §8, ADR-0022): la VK
+        // resta un handle opaco anche qui.
+        let b = bundle();
+        let vk = unlock_with_password(
+            PASSWORD,
+            &SECRET_KEY,
+            &b.password_envelope,
+            &b.kdf_params_cbor,
+            &ACCOUNT,
+        )
+        .unwrap();
+        let mut doc_a = crate::sync::SyncDoc::new_with_actor(&[0xAA]);
+        doc_a.record_item_change(&[0x01; ID_LEN], 1, false).unwrap();
+        let delta = vk
+            .encode_sync_delta(&VAULT_ID, &doc_a.take_pending_changes())
+            .unwrap();
+
+        let mut doc_b = crate::sync::SyncDoc::new();
+        let merged = vk
+            .apply_sync_deltas(&mut doc_b, &VAULT_ID, std::slice::from_ref(&delta))
+            .unwrap();
+        assert_eq!(merged.items.len(), 1);
+        assert_eq!(merged.items[0].item_version, 1);
+
+        // Trapianto su un altro vault → DecryptFailed (binding AAD, doc 16 §8).
+        let altro_vault = [0x00; ID_LEN];
+        let mut doc_c = crate::sync::SyncDoc::new();
+        assert!(matches!(
+            vk.apply_sync_deltas(&mut doc_c, &altro_vault, &[delta]),
+            Err(CoreError::DecryptFailed)
+        ));
     }
 }

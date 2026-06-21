@@ -1,0 +1,8 @@
+{
+  "kind": "sync",
+  "descrizione": "delta CRDT valido ma applicato con un vault_id diverso da quello legato nell'AAD (trapianto): l'AAD non verifica -> DecryptFailed (doc 16 §8)",
+  "vk_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+  "encrypted_delta_hex": "4b4e01013333333333333333333333333333333333333333333333333fcb3d0ac0d4f42883d028a564ecffd68b477aeb6b8775cee932942d9167fd3e8a8facabc4f5b275f172ef5c52588e6a0923a83cc1fcfd2d5f93bfadaf565bf08c2c58ae4eef36a0e488756543d35ad42d97e105b501ce2b772dd2f74b1c",
+  "vault_id_hex": "99999999999999999999999999999999",
+  "expect_error": "DecryptFailed"
+}

@@ -15,6 +15,7 @@ import (
 	"kunuk.dev/core/internal/session"
 	"kunuk.dev/core/modules/accounts"
 	"kunuk.dev/core/modules/auth"
+	vaultsync "kunuk.dev/core/modules/sync"
 	vaultstorage "kunuk.dev/core/modules/vault-storage"
 )
 
@@ -44,6 +45,7 @@ func NewRouter(d Deps) http.Handler {
 	authHandler := auth.NewHandler(auth.NewService(d.Pool, d.Sessions, d.WebAuthn, d.Config.DecoySecret))
 	accountsHandler := accounts.NewHandler(accounts.NewService(d.Pool))
 	vaultHandler := vaultstorage.NewHandler(vaultstorage.NewService(d.Pool))
+	syncHandler := vaultsync.NewHandler(vaultsync.NewService(d.Pool))
 	r.Route("/v1", func(v chi.Router) {
 		// Route pubbliche: registrazione/login/verifica email (nessun Bearer).
 		authHandler.Routes(v)
@@ -52,6 +54,7 @@ func NewRouter(d Deps) http.Handler {
 			p.Use(middleware.Auth(d.Sessions))
 			p.Route("/account", accountsHandler.Routes)
 			vaultHandler.Routes(p)
+			syncHandler.Routes(p)
 		})
 	})
 	return r
