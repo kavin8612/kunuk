@@ -1,6 +1,6 @@
 // Comando one-shot: applica le migrazioni del DB come ruolo kunuk_migrations e termina.
 //
-// È il servizio `migrate` del Compose (stile Home Assistant: a ogni `up` applica le
+// È il servizio `migrate` del Compose (applicazione automatica ad ogni `up` delle
 // migrazioni pendenti, idempotente, prima dell'API) e serve per esecuzioni manuali/ops.
 // A 0.9 il backend richiamerà lo stesso `db.Apply` all'avvio.
 package main
