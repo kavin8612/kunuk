@@ -27,13 +27,18 @@ type EnvelopeInput struct {
 // VaultManifest è il manifest firmato del vault (GET /vault). manifest_pubkey è fissata alla
 // registrazione e immutabile. vault_id serve al client (anche su dispositivo vergine) per legare
 // le AAD di item/manifest (doc 16 §5-6): esposto qui, dietro sessione → nessun rischio di
-// enumeration (ADR-0020).
+// enumeration (ADR-0020). wrapped_signing_key (busta della chiave di firma, doc 16 §6) era
+// finora accettata solo alla registrazione e mai più restituita: nessun client poteva
+// ri-firmare il manifest dopo un login (gap analogo a quello di account_id/vault_id, stesso
+// principio di ADR-0020 — materiale opaco, sicuro dietro sessione autenticata, non una nuova
+// decisione architetturale).
 type VaultManifest struct {
-	VaultID        string      `json:"vault_id"`
-	Manifest       httpx.Bytes `json:"manifest"`
-	ManifestPubkey httpx.Bytes `json:"manifest_pubkey"`
-	Signature      httpx.Bytes `json:"signature"`
-	Version        int         `json:"version"`
+	VaultID           string      `json:"vault_id"`
+	Manifest          httpx.Bytes `json:"manifest"`
+	ManifestPubkey    httpx.Bytes `json:"manifest_pubkey"`
+	Signature         httpx.Bytes `json:"signature"`
+	Version           int         `json:"version"`
+	WrappedSigningKey httpx.Bytes `json:"wrapped_signing_key"`
 }
 
 // ManifestInput è il corpo di PUT /vault/manifest. manifest_pubkey è accettata per coerenza

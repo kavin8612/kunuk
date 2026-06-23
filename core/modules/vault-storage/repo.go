@@ -50,16 +50,19 @@ func updateEnvelope(ctx context.Context, tx pgx.Tx, typ string, wrapped []byte, 
 }
 
 // ── Vault / manifest ──────────────────────────────────────────────────────────
-const getVaultSQL = `SELECT id, manifest, manifest_pubkey, signature, version FROM vault WHERE account_id = current_account_id()`
+const getVaultSQL = `SELECT id, manifest, manifest_pubkey, signature, version, wrapped_signing_key FROM vault WHERE account_id = current_account_id()`
 
 func getVault(ctx context.Context, tx pgx.Tx) (VaultManifest, error) {
 	var vid string
-	var m, pk, sig []byte
+	var m, pk, sig, wsk []byte
 	var ver int
-	if err := tx.QueryRow(ctx, getVaultSQL).Scan(&vid, &m, &pk, &sig, &ver); err != nil {
+	if err := tx.QueryRow(ctx, getVaultSQL).Scan(&vid, &m, &pk, &sig, &ver, &wsk); err != nil {
 		return VaultManifest{}, fmt.Errorf("select vault: %w", err)
 	}
-	return VaultManifest{VaultID: vid, Manifest: httpx.Bytes(m), ManifestPubkey: httpx.Bytes(pk), Signature: httpx.Bytes(sig), Version: ver}, nil
+	return VaultManifest{
+		VaultID: vid, Manifest: httpx.Bytes(m), ManifestPubkey: httpx.Bytes(pk), Signature: httpx.Bytes(sig),
+		Version: ver, WrappedSigningKey: httpx.Bytes(wsk),
+	}, nil
 }
 
 // updateManifest applica il nuovo manifest solo se la versione è strettamente maggiore

@@ -112,6 +112,35 @@ func TestVaultStorageHappyPath(t *testing.T) {
 	assertStatus(t, reqWithToken(t, router, http.MethodDelete, "/v1/items/"+id, tokA), http.StatusNoContent)
 }
 
+// TestGetVaultExposesWrappedSigningKey copre il gap analogo a quello di account_id/vault_id
+// (ADR-0020): senza wrapped_signing_key in GET /vault, nessun client che non sia la sessione
+// di registrazione potrebbe ri-firmare un nuovo manifest (es. dopo un login, o un CRUD item,
+// task 1.3/C2). Il valore deve tornare byte-identico a quello inviato alla registrazione.
+func TestGetVaultExposesWrappedSigningKey(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	pool, _ := setupPreauth(ctx, t)
+	idA := mustRegister(ctx, t, pool, "a@example.com")
+	sessions := session.NewService(pool, time.Hour)
+	tokA := mustIssue(t, ctx, sessions, idA)
+	router := httpserver.NewRouter(httpserver.Deps{Pool: pool, Sessions: sessions, Config: config.Config{}})
+
+	w := reqWithToken(t, router, http.MethodGet, "/v1/vault", tokA)
+	assertStatus(t, w, http.StatusOK)
+	var got struct {
+		WrappedSigningKey string `json:"wrapped_signing_key"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode vault: %v", err)
+	}
+	// sampleRegister (preauth_int_test.go) usa lo stesso dummy {0x01,0x02,0x03} per
+	// wrapped_signing_key alla registrazione.
+	want := b64([]byte{0x01, 0x02, 0x03})
+	if got.WrappedSigningKey != want {
+		t.Fatalf("wrapped_signing_key: atteso %q, ottenuto %q", want, got.WrappedSigningKey)
+	}
+}
+
 // TestCreateItemWithClientID copre l'id scelto dal client (necessario per il binding AAD
 // vault_id‖item_id, doc 16 §5; usato dalla CLI del gate 0.10): l'id torna invariato nella
 // risposta, un id duplicato dà 409 e un id malformato 400.
