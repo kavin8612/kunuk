@@ -2,6 +2,10 @@
   "name": "kunuk-frontend",
   "version": "0.1.0",
   "private": true,
+  "workspaces": [
+    "shared-ui",
+    "desktop"
+  ],
   "scripts": {
     "lint": "eslint .",
     "format:check": "prettier --check .",

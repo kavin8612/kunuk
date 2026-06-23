@@ -1,0 +1,6 @@
+# Versione Rust bloccata per build riproducibili (doc 19 §5), allineata al crypto-core.
+# La CI usa il ref pinnato `dtolnay/rust-toolchain@1.96.0`: tenere il channel allineato.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

@@ -1,0 +1,24 @@
+/* Design token dei colori (fonte: design/palette/palette.md, Brand Book). Solo i colori
+   del Brand Book: nessuna tinta nuova senza prima aggiornare la fonte in design/. */
+:root {
+  /* Colori del Brand Book */
+  --kunuk-color-primary-navy: #071f40;
+  --kunuk-color-deep-blue: #0e315e;
+  --kunuk-color-corporate-blue: #174a8b;
+  --kunuk-color-light-blue: #d8e5f3;
+  --kunuk-color-background: #fcfcfd;
+
+  /* Ruoli semantici (assegnano un ruolo ai colori sopra, non ne introducono di nuovi) */
+  --kunuk-ink: var(--kunuk-color-primary-navy);
+  --kunuk-ink-secondary: rgb(7 31 64 / 64%);
+  --kunuk-ink-disabled: rgb(7 31 64 / 38%);
+  --kunuk-border: rgb(7 31 64 / 12%);
+
+  --kunuk-primary: var(--kunuk-color-corporate-blue);
+  --kunuk-primary-hover: var(--kunuk-color-deep-blue);
+
+  --kunuk-surface: var(--kunuk-color-background);
+  --kunuk-surface-subtle: var(--kunuk-color-light-blue);
+
+  --kunuk-on-primary: #ffffff;
+}

@@ -5,3 +5,7 @@ dist/
 out/
 coverage/
 .turbo/
+# Output di build di cargo (Rust) e schemi generati da Tauri: non sorgente da formattare
+# (già in .gitignore alla radice: src-tauri/target/, gen/).
+**/src-tauri/target/
+**/src-tauri/gen/

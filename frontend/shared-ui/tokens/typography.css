@@ -1,0 +1,35 @@
+/* Design token tipografici (fonte: design/typography/typography.md, Brand Book). Solo i
+   due font del Brand Book: Cormorant Garamond (display) e Inter (body). Il caricamento
+   dei file font (self-hosted o Google Fonts) è del singolo client (desktop/web/estensione),
+   non di questo file: qui solo i nomi di famiglia e la scala. */
+:root {
+  --kunuk-font-display: "Cormorant Garamond", serif;
+  --kunuk-font-body: "Inter", sans-serif;
+
+  /* display: solo momenti di marca (sblocco, onboarding, titoli di pagina) */
+  --kunuk-display-lg-size: 36px;
+  --kunuk-display-lg-line-height: 44px;
+  --kunuk-display-lg-weight: 600;
+
+  --kunuk-display-md-size: 28px;
+  --kunuk-display-md-line-height: 36px;
+  --kunuk-display-md-weight: 600;
+
+  /* body: tutta la UI funzionale (liste, form, impostazioni) */
+  --kunuk-body-lg-size: 16px;
+  --kunuk-body-lg-line-height: 24px;
+  --kunuk-body-lg-weight: 400;
+
+  --kunuk-body-md-size: 14px;
+  --kunuk-body-md-line-height: 20px;
+  --kunuk-body-md-weight: 400;
+
+  --kunuk-body-sm-size: 12px;
+  --kunuk-body-sm-line-height: 16px;
+  --kunuk-body-sm-weight: 500;
+
+  --kunuk-label-caps-size: 11px;
+  --kunuk-label-caps-line-height: 16px;
+  --kunuk-label-caps-weight: 600;
+  --kunuk-label-caps-letter-spacing: 0.08em;
+}

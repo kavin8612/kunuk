@@ -16,6 +16,7 @@ pub mod account;
 pub mod crypto;
 pub mod envelope;
 pub mod error;
+pub mod generator;
 pub mod keys;
 pub mod recovery;
 pub mod sync;
@@ -27,4 +28,5 @@ pub use account::{
     RegistrationBundle, VaultKey,
 };
 pub use error::{CoreError, CoreResult};
+pub use generator::{generate_passphrase, generate_password, PassphraseLang, PasswordPolicy};
 pub use recovery::{recover_unlock, recovery_sign_request, recovery_verify_request};

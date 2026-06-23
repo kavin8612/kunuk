@@ -17,6 +17,12 @@
 		directives `
 			Include @coraza.conf-recommended
 			Include @crs-setup.conf.example
+			# Il default CRS (regola 911100) non ammette PUT/DELETE: l'API li usa
+			# regolarmente (PUT manifest/item, DELETE item, doc 12) — senza questo
+			# override ogni scrittura viene bloccata col solo verbo, prima ancora
+			# di valutare il corpo della richiesta. ID 100001: range riservato alle
+			# regole locali (1-99999), fuori dagli ID propri del CRS.
+			SecAction "id:100001,phase:1,pass,t:none,nolog,setvar:'tx.allowed_methods=GET HEAD POST PUT DELETE OPTIONS'"
 			Include @owasp_crs/*.conf
 			SecRuleEngine On
 		`

@@ -92,6 +92,37 @@ impl VaultKey {
     ) -> CoreResult<crate::sync::MergeResult> {
         crate::sync::sync_apply_deltas(doc, self.expose(), vault_id, encrypted_deltas)
     }
+
+    /// Avvolge il seme della chiave di firma con questa VK (doc 16 §6). Come
+    /// [`encrypt_item`](Self::encrypt_item): è così che i client la incartano alla
+    /// registrazione senza toccare byte di chiave.
+    pub fn wrap_signing_key(
+        &self,
+        signing_seed: &[u8; KEY_LEN],
+        vault_id: &[u8; ID_LEN],
+    ) -> CoreResult<Vec<u8>> {
+        crate::vault::manifest::wrap_signing_key(self.expose(), signing_seed, vault_id)
+    }
+
+    /// Apre la busta della chiave di firma e firma un nuovo contenuto di manifest, in
+    /// un'unica chiamata (doc 16 §6): serve a ri-firmare il manifest dopo un login o un CRUD
+    /// item (task 1.3), non solo alla registrazione. Restituisce solo i byte del manifest
+    /// firmato: la `SigningKey` (tipo di `ed25519-dalek`) non esce mai dal core, così i
+    /// client non hanno bisogno di importare quella dipendenza solo per nominarne il tipo
+    /// (SR-1, doc 19 §5). Trapianto su un altro vault o busta manomessa → `DecryptFailed`.
+    pub fn sign_manifest(
+        &self,
+        wrapped_signing_key: &[u8],
+        vault_id: &[u8; ID_LEN],
+        content: &crate::vault::manifest::ManifestContent,
+    ) -> CoreResult<Vec<u8>> {
+        let signing_key = crate::vault::manifest::unwrap_signing_key(
+            self.expose(),
+            wrapped_signing_key,
+            vault_id,
+        )?;
+        crate::vault::manifest::sign_manifest(&signing_key, content)
+    }
 }
 
 /// Deriva il verificatore di autenticazione della via password (doc 16 §3) per
@@ -441,6 +472,48 @@ mod tests {
         let mut doc_c = crate::sync::SyncDoc::new();
         assert!(matches!(
             vk.apply_sync_deltas(&mut doc_c, &altro_vault, &[delta]),
+            Err(CoreError::DecryptFailed)
+        ));
+    }
+
+    #[test]
+    fn sign_manifest_via_vaultkey() {
+        // Come item_round_trip_via_vaultkey, ma per ri-firmare il manifest dopo un login
+        // (task 1.3/C2), non solo alla registrazione: un'unica chiamata, mai un byte di
+        // SigningKey fuori dal core (SR-1).
+        use crate::vault::manifest::{self, ItemRef, ManifestContent};
+
+        let b = bundle();
+        let vk = unlock_with_password(
+            PASSWORD,
+            &SECRET_KEY,
+            &b.password_envelope,
+            &b.kdf_params_cbor,
+            &ACCOUNT,
+        )
+        .unwrap();
+        let seed = [0x42; KEY_LEN];
+        let wrapped = vk.wrap_signing_key(&seed, &VAULT_ID).unwrap();
+        let content = ManifestContent {
+            vault_id: VAULT_ID.into(),
+            version: 2,
+            items: vec![ItemRef {
+                item_id: [0x01; ID_LEN].into(),
+                item_version: 1,
+            }],
+            crdt_clock: vec![],
+        };
+        let signed = vk.sign_manifest(&wrapped, &VAULT_ID, &content).unwrap();
+        let (_, expected_pub) = crate::crypto::signature::keypair_from_seed(&seed);
+        let view =
+            manifest::verify_manifest_with_pubkey(&expected_pub.to_bytes(), &signed, &VAULT_ID, 2)
+                .unwrap();
+        assert_eq!(view.version, 2);
+
+        // Trapianto su un altro vault → DecryptFailed (binding AAD, doc 16 §6).
+        let altro_vault = [0x00; ID_LEN];
+        assert!(matches!(
+            vk.sign_manifest(&wrapped, &altro_vault, &content),
             Err(CoreError::DecryptFailed)
         ));
     }
