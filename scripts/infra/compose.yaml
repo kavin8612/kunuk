@@ -82,7 +82,7 @@ services:
     pids_limit: 200
 
   # ── Migrazioni DB (one-shot): applica lo schema come kunuk_migrations e termina ─
-  # Stile Home Assistant: a ogni `up` applica le migrazioni pendenti (idempotente,
+  # Applicazione automatica ad ogni `up`: applica le migrazioni pendenti (idempotente,
   # tracciate da goose). L'API dipende dal suo completamento con successo.
   migrate:
     build:

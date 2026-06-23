@@ -2,7 +2,7 @@
 //
 // Le migrazioni (`migrations/*.sql`) sono incluse nel binario via go:embed: lo stesso
 // codice è usato dai test (Postgres effimero), dal comando one-shot `migrate` (servizio del
-// Compose, stile Home Assistant: a ogni avvio applica il nuovo, idempotente e tracciato) e,
+// Compose: a ogni avvio applica il nuovo, idempotente e tracciato) e,
 // dal task 0.9, dall'avvio del backend. Va eseguito con una connessione del ruolo
 // kunuk_migrations (DDL); il ruolo runtime kunuk_app non ha privilegi di migrazione (SR-32).
 package db
